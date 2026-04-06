@@ -1,3 +1,12 @@
+"""
+3_❓_Help.py — Documentacao completa do DarkSherlock.
+
+Pagina de referencia com guia de utilizacao, descricao do pipeline,
+configuracao de providers, gestao de engines, logs/debug e dicas.
+
+Contexto academico: Dissertacao de Mestrado em Ciberseguranca.
+"""
+
 import streamlit as st
 
 st.set_page_config(
@@ -9,37 +18,91 @@ st.set_page_config(
 st.title("Help & Documentation")
 st.caption("DarkSherlock — AI-Powered Dark Web OSINT Tool")
 
-# --- Quick Start ---
+# ---------------------------------------------------------------------------
+# Quick Start
+# ---------------------------------------------------------------------------
 st.header("Quick Start")
 st.markdown("""
-1. **Seleciona um modelo LLM** na sidebar (ex: `llama3.2:latest` para uso local via Ollama)
-2. **Escreve uma query** na barra de pesquisa da Home (ex: `Akira ransomware`)
-3. **Clica em Run** — o DarkSherlock executa automaticamente o pipeline de 6 etapas
-4. **Analisa os resultados** — o summary e gerado pelo LLM com base nos dados recolhidos
-5. **Descarrega o relatorio** em Markdown para referencia futura
+1. **Garante que o Tor esta a correr** na porta 9050 (`brew services start tor` no macOS)
+2. **Seleciona um modelo LLM** na sidebar (ex: `llama3.2:latest` para uso local via Ollama)
+3. **Escolhe o dominio de investigacao** no Prompt Settings (Threat Intel, Ransomware, PII, Corporate)
+4. **Escreve uma query** na barra de pesquisa (ex: `Akira ransomware leak site`)
+5. **Clica em Run** — o pipeline de 6 etapas executa automaticamente
+6. **Analisa os resultados** — o LLM produz uma analise por fonte com citacoes directas
+7. **Descarrega o relatorio** em PDF forense ou Markdown
 """)
 
 st.divider()
 
-# --- Pipeline ---
+# ---------------------------------------------------------------------------
+# Pipeline de Investigacao
+# ---------------------------------------------------------------------------
 st.header("Pipeline de Investigacao")
 st.markdown("""
-O DarkSherlock executa 6 etapas sequenciais quando fazes uma pesquisa:
+O DarkSherlock executa um pipeline de **6 etapas sequenciais** quando fazes uma pesquisa.
+Cada etapa mostra o estado (running/complete/error), detalhes expandiveis e tempo de execucao.
 """)
 
 stages = [
-    ("Stage 1 — Load LLM", "Carrega o modelo de linguagem selecionado. "
-     "Se usas Ollama, o modelo corre localmente. Se usas OpenAI/Claude/Gemini, e feita uma chamada API."),
-    ("Stage 2 — Refine Query", "O LLM analisa a tua query e optimiza-a para obter melhores resultados "
-     "nos motores de pesquisa. Exemplo: `Akira` pode ser refinado para `Akira ransomware group leak`."),
-    ("Stage 3 — Search Dark Web", "A query refinada e enviada a todos os search engines ativos via Tor. "
-     "Cada engine e consultado em paralelo. Os resultados (titulo + link .onion) sao agregados e deduplicados."),
-    ("Stage 4 — Filter Results", "O LLM recebe todos os resultados e seleciona os Top 20 mais relevantes "
-     "para a query. Isto filtra ruido e foca a investigacao nos resultados mais promissores."),
-    ("Stage 5 — Scrape Content", "Os links filtrados sao acedidos via Tor e o conteudo textual e extraido "
-     "com BeautifulSoup. O numero de paginas scrapeadas depende do slider 'Max Pages to Scrape'."),
-    ("Stage 6 — Generate Summary", "O LLM analisa todo o conteudo recolhido e gera um relatorio de "
-     "inteligencia estruturado, com artefactos, insights e proximos passos de investigacao."),
+    ("Stage 1 — Load LLM", """
+Carrega o modelo de linguagem selecionado na sidebar.
+
+- **Ollama (local):** O modelo corre na tua maquina — sem custos, dados privados
+- **Cloud (OpenAI, Claude, Gemini, OpenRouter):** Chamada API — mais rapido, melhor qualidade
+- O modelo e reutilizado para as etapas 2, 4 e 6
+"""),
+    ("Stage 2 — Refine Query", """
+O LLM analisa a tua query e optimiza-a para motores de pesquisa da dark web.
+
+- A query e adaptada ao **dominio de investigacao** selecionado (preset)
+- Exemplo: `lockbit` → `lockbit ransomware group leak site`
+- O refinamento e limitado a **5 palavras** para maximizar a relevancia
+- O LLM opera como um "algoritmo de keywords" — sem acesso a conteudo externo
+"""),
+    ("Stage 3 — Search Dark Web", """
+A query refinada e enviada a **todos os search engines ativos** em paralelo via proxy Tor.
+
+- Cada engine e consultado numa thread separada (configuraveis na sidebar)
+- Os resultados (titulo + link .onion) sao agregados e **deduplicados por URL**
+- A sessao Tor e **partilhada entre todos os workers** para minimizar o overhead de circuito
+- Os resultados sao limitados ao valor de "Max Results to Filter"
+- Cada resultado recebe um **timestamp UTC de recolha** para auditoria
+"""),
+    ("Stage 4 — Filter Results", """
+O LLM recebe todos os resultados (indice, link truncado, titulo) e seleciona os **Top 20 mais relevantes**.
+
+- O LLM opera como um "algoritmo de ranking" — devolve apenas indices numericos
+- Filtra ruido e foca a investigacao nos resultados mais promissores
+- Em caso de **rate limit da API**, tenta automaticamente com titulos truncados
+- Se o LLM falhar, usa os primeiros 20 resultados como fallback
+"""),
+    ("Stage 5 — Scrape Content", """
+Os links filtrados sao acedidos via Tor e o conteudo textual e extraido com BeautifulSoup.
+
+- A sessao Tor e **partilhada** entre todos os workers de scraping (optimizacao de performance)
+- Paginas inacessiveis sao removidas automaticamente (timeout, 404, etc.)
+- O conteudo e **truncado por paragrafo** — corta no ultimo paragrafo completo antes do limite, em vez de cortar a meio de frases
+- Sao calculados **hashes SHA-256 de integridade** para cada pagina e para o conjunto global
+- Cada pagina recebe um **timestamp UTC de scraping**
+- Um expander mostra o **conteudo recolhido por fonte** (primeiros 500 chars de cada) para transparencia
+
+**Novo:** O conteudo recolhido e agora visivel antes da analise do LLM, permitindo ao investigador verificar exactamente o que foi extraido de cada URL.
+"""),
+    ("Stage 6 — Generate Summary", """
+O LLM analisa todo o conteudo recolhido e gera um **relatorio de inteligencia estruturado** em Portugues.
+
+- O conteudo e formatado como **[FONTE N]** com URL explicito para cada pagina
+- O LLM produz uma **analise por fonte**: cita excertos directos do texto e explica a relevancia
+- Cada insight referencia a(s) fonte(s) de onde deriva
+- O output segue o formato do preset selecionado (Threat Intel, Ransomware, PII, Corporate)
+- O summary e gerado em **modo streaming** — aparece em tempo real na interface
+
+**Formato de output (por preset):**
+- Artefactos de investigacao (IOCs, nomes, emails, hashes, IPs, dominios)
+- Analise por fonte com citacoes directas
+- Insights chave com referencia a fontes
+- Proximos passos de investigacao
+"""),
 ]
 
 for title, desc in stages:
@@ -48,41 +111,73 @@ for title, desc in stages:
 
 st.divider()
 
-# --- Pages ---
+# ---------------------------------------------------------------------------
+# Paginas
+# ---------------------------------------------------------------------------
 st.header("Paginas")
 
 st.subheader("Home")
 st.markdown("""
-Pagina principal com barra de pesquisa. Quando executa uma investigacao, mostra o progresso
-de cada etapa do pipeline em tempo real com tempos de execucao. Inclui:
-- **Barra de pesquisa** — escreve a query e clica Run
-- **Pipeline visual** — cada etapa mostra estado (running/complete/error) e detalhes expandiveis
-- **Findings** — summary final em streaming
+Pagina principal com barra de pesquisa e pipeline completo de investigacao.
+
+- **Pipeline visual** — cada etapa mostra estado (running/complete/error) com tempos de execucao
+- **Conteudo por fonte** — expander com o texto extraido de cada URL antes da analise LLM
+- **Findings** — relatorio final em streaming com analise per-source
 - **Notes** — detalhes da investigacao (query refinada, modelo, contagens)
-- **Sources** — lista de links .onion filtrados
-- **Download** — exporta o summary em Markdown
+- **Download PDF** — relatorio forense com metadados, hashes de integridade e cadeia de custodia
+- **Download MD** — summary em Markdown para referencia rapida
+- **Past Investigations** — sidebar com historico de investigacoes anteriores (JSON)
 """)
 
 st.subheader("Search Engines")
 st.markdown("""
-Gestao dos motores de pesquisa da dark web. Funcionalidades:
-- **Test All Engines** — testa a conectividade de todos os engines via Tor, mostrando latencia ou erro
-- **Ativar/Desativar** — engines desativados sao completamente ignorados nas pesquisas e health checks
-- **Editar** — altera nome e URL de um engine existente
-- **Remover** — remove permanentemente um engine (com confirmacao)
-- **Adicionar** — regista um novo engine (URL deve conter `{query}`)
-- **Reset** — repoe a lista original de 16 engines
+Gestao dos motores de pesquisa da dark web utilizados pelo pipeline.
+
+- **Auto-health-check** — testa automaticamente todos os engines na primeira carga da pagina
+- **Test All Engines** — teste manual de conectividade via Tor com latencia por engine
+- **Ativar/Desativar** — engines desativados sao ignorados nas pesquisas
+- **Editar** — altera nome e URL de um engine (URL deve conter `{query}`)
+- **Remover** — remove permanentemente um engine (com dialogo de confirmacao)
+- **Adicionar** — regista um novo engine customizado
+- **Reset** — repoe a lista original de engines (inclui defaults + deepdarkCTI)
+
+**Integracao deepdarkCTI:** Alem dos engines originais, o DarkSherlock inclui **18 engines
+adicionais** do repositorio [fastfire/deepdarkCTI](https://github.com/fastfire/deepdarkCTI),
+que mantem uma lista actualizada de recursos .onion verificados como ONLINE.
+Estes engines vem **desactivados por omissao** — activa-os individualmente e testa com
+"Test All Engines" antes de usar no pipeline.
 """)
 
 st.subheader("Investigation (Pipeline Detalhado)")
 st.markdown("""
-Versao alternativa da Home com pipeline identico mas sidebar completa partilhada.
-Util para ter a mesma experiencia de investigacao com acesso a todas as configuracoes.
+Pipeline identico a Home mas com a sidebar completa e opcoes de configuracao
+acessiveis durante a investigacao. Inclui:
+
+- Mesmo pipeline de 6 etapas com progresso visual
+- Sidebar com modelo, threads, limites, preset e custom instructions
+- Historico de investigacoes carregavel
+- Download de PDF forense e Markdown
+""")
+
+st.subheader("Debug & Logs")
+st.markdown("""
+Pagina de diagnostico que centraliza toda a informacao de logs e auditoria.
+
+- **Audit Log** — tabela com todas as investigacoes executadas: query, modelo, preset,
+  engines, resultados encontrados/filtrados/scraped, duracao e timestamp
+- **Detalhes por entrada** — expander JSON com todos os campos de cada investigacao
+- **App Log** — log aplicacional em texto livre com todos os eventos da aplicacao
+  (scraping timeouts, erros de rede, debug messages)
+- **Filtro por nivel** — filtra por DEBUG, INFO, WARNING, ERROR
+- **Metricas** — contagem de warnings e errors no log actual
+- **Limpar logs** — botoes para limpar Audit Log, App Log ou ambos
 """)
 
 st.divider()
 
-# --- Sidebar Settings ---
+# ---------------------------------------------------------------------------
+# Settings (Sidebar)
+# ---------------------------------------------------------------------------
 st.header("Settings (Sidebar)")
 
 st.subheader("Select LLM Model")
@@ -105,9 +200,11 @@ Para instalar um novo modelo Ollama: `ollama pull <nome>` (ex: `ollama pull mist
 
 st.subheader("Scraping Threads")
 st.markdown("""
-Numero de threads paralelos usados para scraping de paginas .onion (1-16, default: 4).
-Mais threads = mais rapido, mas pode sobrecarregar o Tor proxy.
-Recomendado: 4-8 para uso normal.
+Numero de threads paralelos usados para pesquisa e scraping de paginas .onion (1-16, default: 4).
+
+- Mais threads = mais rapido, mas pode sobrecarregar o Tor proxy
+- A sessao Tor e **partilhada** entre todos os threads (sem overhead por thread)
+- Recomendado: **4-8** para uso normal
 """)
 
 st.subheader("Max Results to Filter")
@@ -120,17 +217,24 @@ st.subheader("Max Pages to Scrape")
 st.markdown("""
 Limite maximo de paginas .onion a scrape depois da filtragem (3-20, default: 10).
 Valores mais altos fornecem mais dados ao LLM para a analise final,
-mas aumentam o tempo de execucao.
+mas aumentam o tempo de execucao do Stage 5.
 """)
 
 st.divider()
 
-# --- Prompt Settings ---
+# ---------------------------------------------------------------------------
+# Prompt Settings
+# ---------------------------------------------------------------------------
 st.header("Prompt Settings")
 st.markdown("""
 Os Prompt Settings definem o **dominio de investigacao** — o tipo de analise que o LLM
 vai produzir no relatorio final. Cada preset configura um system prompt especializado
-que orienta o LLM para extrair artefactos e insights relevantes ao dominio.
+que orienta o LLM para:
+
+- Analisar o conteudo de **cada fonte individualmente** (analise per-source)
+- Citar **excertos directos** do texto de cada fonte
+- Extrair **artefactos e IOCs** relevantes ao dominio
+- Gerar **insights accionaveis** com referencia as fontes de onde derivam
 """)
 
 presets = {
@@ -141,7 +245,7 @@ presets = {
             "Indicadores de ameaca: nomes, emails, telefones, enderecos crypto, dominios",
             "Mercados e foruns darkweb mencionados",
             "Informacao sobre threat actors (nomes, aliases, TTPs)",
-            "Nomes de malware e ferramentas",
+            "Nomes de malware e ferramentas de ataque",
             "3-5 insights chave com proximos passos de investigacao",
         ],
         "use_when": "Investigacao generica sem foco especifico, reconhecimento inicial de ameacas.",
@@ -154,7 +258,7 @@ presets = {
             "Indicadores: hashes, dominios C2, IPs, URLs de staging, nomes de payload",
             "Mapeamento de TTPs para MITRE ATT&CK",
             "Organizacoes vitimas, setores e geografias",
-            "Evolucao do threat actor e comportamento",
+            "Perfil do threat actor e evolucao comportamental",
         ],
         "use_when": "Investigacao de incidentes de ransomware, analise de malware, threat hunting.",
     },
@@ -163,7 +267,7 @@ presets = {
         "desc": "Investigacao de exposicao de dados pessoais (PII). O LLM procura:",
         "focus": [
             "PII exposto: nomes, emails, telefones, moradas, SSN, passaportes, dados financeiros",
-            "Fontes de breach e data brokers",
+            "Fontes de breach e data brokers identificados",
             "Mercados que vendem dados pessoais",
             "Avaliacao de severidade de exposicao",
             "Acoes protetivas recomendadas",
@@ -176,9 +280,9 @@ presets = {
         "focus": [
             "Dados corporativos leaked: credenciais, codigo-fonte, documentos internos",
             "Registos financeiros, dados de empregados, bases de dados de clientes",
-            "Threat actors e insider threats",
-            "Atividade de data brokers focada na organizacao",
-            "Avaliacao de impacto empresarial",
+            "Threat actors, insider threats e data brokers",
+            "Avaliacao de impacto empresarial e dano competitivo",
+            "Passos de resposta a incidentes e consideracoes legais",
         ],
         "use_when": "Investigacao de data leaks empresariais, resposta a incidentes, due diligence.",
     },
@@ -196,17 +300,19 @@ st.markdown("""
 Campo opcional que permite adicionar instrucoes extra ao LLM para a analise final.
 As instrucoes sao anexadas ao system prompt do preset selecionado.
 
-**Exemplos por dominio:**
+**Exemplos:**
 - **Threat Intel:** _"Pay extra attention to cryptocurrency wallet addresses and exchange names"_
-- **Ransomware:** _"Highlight any references to double-extortion tactics"_
-- **Identity:** _"Flag any passport or government ID numbers"_
-- **Corporate:** _"Prioritize mentions of source code repositories and API keys"_
+- **Ransomware:** _"Highlight any references to double-extortion tactics and MITRE T1486"_
+- **Identity:** _"Flag any passport or government ID numbers found in breach data"_
+- **Corporate:** _"Prioritize mentions of source code repositories, API keys and internal wikis"_
 """)
 
 st.divider()
 
-# --- Provider Configuration ---
-st.header("Provider Configuration")
+# ---------------------------------------------------------------------------
+# Provider Configuration
+# ---------------------------------------------------------------------------
+st.header("Configuracao de Providers")
 st.markdown("""
 O DarkSherlock suporta multiplos providers de LLM. Configura-os no ficheiro `.env`
 na raiz do projeto:
@@ -227,7 +333,30 @@ O Ollama e o llama.cpp sao opcionais — usam modelos locais sem necessidade de 
 
 st.divider()
 
-# --- Health Checks ---
+# ---------------------------------------------------------------------------
+# Reports & Forensics
+# ---------------------------------------------------------------------------
+st.header("Relatorios e Forense")
+st.markdown("""
+Cada investigacao completa gera dois tipos de relatorio:
+
+**Relatorio PDF Forense:**
+- Metadados completos: audit ID, timestamps UTC, modelo, preset, engines utilizados
+- Lista de fontes com URLs e timestamps de recolha/scraping
+- **Hashes SHA-256 de integridade** — por pagina e global — para verificacao de cadeia de custodia
+- Summary completo gerado pelo LLM
+- Adequado para anexar a relatorios formais de investigacao ou processos legais
+
+**Summary Markdown:**
+- Analise completa em formato texto
+- Ideal para referencia rapida, partilha ou inclusao em documentacao
+""")
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Health Checks
+# ---------------------------------------------------------------------------
 st.header("Health Checks")
 st.markdown("""
 Na sidebar, os botoes de Health Check permitem verificar:
@@ -237,22 +366,32 @@ Na sidebar, os botoes de Health Check permitem verificar:
 - **Check Search Engines** — verifica primeiro se o Tor proxy esta acessivel (porta 9050),
   depois faz ping a todos os engines ativos via Tor e reporta latencia ou erro
 
-Na pagina **Search Engines**, o botao **Test All Engines** testa todos os engines
-(incluindo desativados) e mostra o estado de cada um com indicadores visuais.
+Na pagina **Search Engines**, o **auto-health-check** testa automaticamente todos os engines
+na primeira carga. O botao **Test All Engines** permite re-testar a qualquer momento.
+
+O resultado do ultimo teste e mostrado como **banner de notificacao** na pagina de Investigacao.
 """)
 
 st.divider()
 
-# --- Tor ---
+# ---------------------------------------------------------------------------
+# Tor Proxy
+# ---------------------------------------------------------------------------
 st.header("Tor Proxy")
 st.markdown("""
 O DarkSherlock necessita do Tor para aceder a sites .onion. O Tor deve estar a correr
 na porta 9050 (SOCKS5 proxy).
 
-**Instalacao e arranque (macOS):**
+**macOS:**
 ```bash
 brew install tor
 brew services start tor
+```
+
+**Linux (Debian/Ubuntu):**
+```bash
+sudo apt install tor
+sudo systemctl start tor
 ```
 
 **Verificar se esta a correr:**
@@ -266,28 +405,43 @@ o Tor antes do Streamlit.
 
 st.divider()
 
-# --- Investigations ---
+# ---------------------------------------------------------------------------
+# Investigacoes Guardadas
+# ---------------------------------------------------------------------------
 st.header("Investigacoes Guardadas")
 st.markdown("""
 Cada investigacao completada e automaticamente guardada em `investigations/` como JSON.
-Na sidebar, podes carregar investigacoes passadas para rever os resultados.
+Na sidebar da pagina Investigation, podes carregar investigacoes passadas.
 
 Cada ficheiro contem:
-- Query original e refinada
-- Modelo usado e preset
-- Lista de sources filtradas
-- Summary completo gerado pelo LLM
+- **audit_id** — identificador unico da investigacao (UUID)
+- **Timestamps UTC** — momento exacto de inicio e conclusao
+- **Query original e refinada**
+- **Modelo usado e preset**
+- **Engines activos** durante a investigacao
+- **Lista de sources filtradas** com timestamps de recolha e scraping
+- **Hashes de integridade** — SHA-256 por fonte e global
+- **Summary completo** gerado pelo LLM
+
+O **Audit Log** (consultavel na pagina Debug) regista tambem metricas de performance:
+resultados encontrados, filtrados, scraped, duracao total do pipeline e erros.
 """)
 
 st.divider()
 
-# --- Keyboard ---
+# ---------------------------------------------------------------------------
+# Dicas
+# ---------------------------------------------------------------------------
 st.header("Dicas")
 st.markdown("""
-- **Modelos locais sao mais lentos** mas nao tem custos e mantem os dados privados
-- **Mais search engines = mais resultados** mas tambem mais tempo de execucao
-- **Desativa engines offline** na pagina Search Engines para acelerar pesquisas
+- **Modelos locais sao mais lentos** mas nao tem custos e mantem os dados completamente privados
+- **O pipeline reutiliza sessoes Tor** — nao cria novas conexoes por cada URL, o que acelera significativamente o Stage 3 e 5
+- **Resultados de pesquisa sao cached** por 200 segundos na Home — re-executar a mesma query e instantaneo
+- **Mais search engines = mais resultados** mas tambem mais tempo — desactiva engines offline na pagina Search Engines
+- **Engines do deepdarkCTI** estao desactivados por omissao — activa-os e testa antes de usar
 - **Usa Custom Instructions** para focar a analise em artefactos especificos
-- **O pipeline e idempotente** — resultados de pesquisa e scraping sao cached por 200 segundos
-- **Ficheiros .env nunca devem ser comitados** — ja esta no .gitignore
+- **O conteudo por fonte** (expander no Stage 5) permite verificar o que o LLM vai analisar antes de ver o summary
+- **Consulta os logs** na pagina Debug para diagnosticar problemas de scraping (timeouts, erros de rede)
+- **Ficheiros .env nunca devem ser comitados** — ja estao no .gitignore
+- **O relatorio PDF** inclui hashes de integridade para cadeia de custodia forense
 """)
