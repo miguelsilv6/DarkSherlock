@@ -40,6 +40,47 @@ st.set_page_config(
 
 render_sidebar()
 
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');
+    html, body, [class*="css"] {
+        font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace !important;
+    }
+    h1 {
+        font-size: 1.55rem !important; font-weight: 700 !important;
+        letter-spacing: 0.12em !important; text-transform: uppercase !important;
+        color: #00ff9f !important; border-bottom: 1px solid #00ff9f33 !important;
+        padding-bottom: 0.4rem !important; margin-bottom: 1.4rem !important;
+    }
+    h2, h3 { letter-spacing: 0.06em; color: #a0f0c8; }
+    .stButton > button, .stDownloadButton > button {
+        background-color: transparent !important; color: #a0f0c8 !important;
+        border: 1px solid #a0f0c833 !important; border-radius: 4px !important;
+        transition: border-color 0.2s ease !important;
+    }
+    .stButton > button:hover, .stDownloadButton > button:hover {
+        border-color: #00ff9f !important; color: #00ff9f !important;
+    }
+    button[data-testid="baseButton-primary"], .stButton > button[kind="primary"] {
+        background-color: #00ff9f14 !important; color: #00ff9f !important;
+        border: 1px solid #00ff9f !important; border-radius: 4px !important;
+        font-weight: 600 !important;
+    }
+    [data-testid="stStatusWidget"], div[data-testid="stExpander"] {
+        border: 1px solid #00ff9f22 !important; border-radius: 6px !important;
+        background-color: #0d0d18 !important;
+    }
+    [data-testid="stSidebar"] { border-right: 1px solid #00ff9f1a !important; }
+    [data-testid="stAlertContainer"][kind="success"] {
+        border-left: 3px solid #00ff9f !important; background-color: #00ff9f0d !important;
+    }
+    [data-testid="stAlertContainer"][kind="warning"] { border-left: 3px solid #ffcc00 !important; }
+    [data-testid="stAlertContainer"][kind="error"]   { border-left: 3px solid #ff4444 !important; }
+    </style>""",
+    unsafe_allow_html=True,
+)
+
 # Caminhos dos ficheiros de log
 _LOG_DIR = Path("logs")
 _AUDIT_LOG = _LOG_DIR / "audit.jsonl"

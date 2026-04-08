@@ -76,8 +76,7 @@ st.markdown(
     .stButton > button[kind="primary"] {
         background-color: #00ff9f14 !important; color: #00ff9f !important;
         border: 1px solid #00ff9f !important; border-radius: 4px !important;
-        font-weight: 600 !important; letter-spacing: 0.08em !important;
-        text-transform: uppercase !important;
+        font-weight: 600 !important;
     }
     button[kind="primaryFormSubmit"]:hover,
     button[data-testid="baseButton-primary"]:hover,

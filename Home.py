@@ -102,15 +102,9 @@ def _render_pipeline_error(stage: str, err: Exception) -> None:
         "- Restart the app after updating environment variables so the new values are picked up.",
     ]
 
-    # Acrescenta uma dica específica ao fornecedor detectado na mensagem de erro
-    if any(token in lower_msg for token in ("anthropic", "x-api-key", "invalid api key", "authentication")):
-        hints.insert(0, "- Claude/Anthropic models require a valid `ANTHROPIC_API_KEY`.")
-    elif "openrouter" in lower_msg:
-        hints.insert(0, "- OpenRouter models require `OPENROUTER_API_KEY` and a reachable OpenRouter endpoint.")
-    elif "openai" in lower_msg or "gpt" in lower_msg:
-        hints.insert(0, "- OpenAI models require `OPENAI_API_KEY` with access to the chosen model.")
-    elif "google" in lower_msg or "gemini" in lower_msg:
-        hints.insert(0, "- Google Gemini models need `GOOGLE_API_KEY` or Application Default Credentials.")
+    # Acrescenta uma dica específica para Ollama
+    if any(token in lower_msg for token in ("ollama", "connection refused", "connect")):
+        hints.insert(0, "- Ensure Ollama is running: `ollama serve`")
 
     # Mostra o painel de erro na interface e interrompe o pipeline
     st.error(
@@ -320,8 +314,6 @@ st.markdown(
         border: 1px solid #00ff9f !important;
         border-radius: 4px !important;
         font-weight: 600 !important;
-        letter-spacing: 0.08em !important;
-        text-transform: uppercase !important;
         transition: background-color 0.2s ease, box-shadow 0.2s ease !important;
     }
     button[kind="primaryFormSubmit"]:hover,

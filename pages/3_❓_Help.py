@@ -182,20 +182,15 @@ st.header("Settings (Sidebar)")
 
 st.subheader("Select LLM Model")
 st.markdown("""
-Escolhe o modelo de linguagem para processar as queries. Opcoes disponiveis dependem
-das API keys configuradas no ficheiro `.env`:
+Escolhe o modelo de linguagem para processar as queries. O DarkSherlock utiliza
+exclusivamente modelos locais via **Ollama**:
 
 | Provider | Modelos | Requisito |
 |----------|---------|-----------|
-| **Ollama** (local) | Qualquer modelo instalado (`ollama pull <nome>`) | `OLLAMA_BASE_URL` no .env |
-| **OpenAI** | GPT-4.1, GPT-5.x | `OPENAI_API_KEY` |
-| **Anthropic** | Claude Sonnet 4.0, 4.5 | `ANTHROPIC_API_KEY` |
-| **Google** | Gemini 2.5 Flash/Pro | `GOOGLE_API_KEY` |
-| **OpenRouter** | Qwen, Grok, e outros | `OPENROUTER_API_KEY` |
-| **llama.cpp** | Qualquer modelo servido localmente | `LLAMA_CPP_BASE_URL` |
+| **Ollama** (local) | Qualquer modelo instalado (`ollama pull <nome>`) | Ollama em execucao |
 
-Modelos locais (Ollama, llama.cpp) sao automaticamente detetados e adicionados a lista.
-Para instalar um novo modelo Ollama: `ollama pull <nome>` (ex: `ollama pull mistral`).
+Os modelos sao automaticamente detetados via API do Ollama.
+Para instalar um novo modelo: `ollama pull <nome>` (ex: `ollama pull llama3.1`).
 """)
 
 st.subheader("Scraping Threads")
@@ -312,23 +307,16 @@ st.divider()
 # ---------------------------------------------------------------------------
 # Provider Configuration
 # ---------------------------------------------------------------------------
-st.header("Configuracao de Providers")
+st.header("Configuracao do Ollama")
 st.markdown("""
-O DarkSherlock suporta multiplos providers de LLM. Configura-os no ficheiro `.env`
-na raiz do projeto:
+O DarkSherlock utiliza modelos locais via Ollama. Configura o URL no ficheiro `.env`:
 
 ```
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-GOOGLE_API_KEY=AI...
 OLLAMA_BASE_URL=http://localhost:11434
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_API_KEY=sk-or-...
-LLAMA_CPP_BASE_URL=http://localhost:8080
 ```
 
-Apenas os providers com chaves configuradas aparecem na lista de modelos.
-O Ollama e o llama.cpp sao opcionais — usam modelos locais sem necessidade de API key.
+Se `OLLAMA_BASE_URL` nao estiver definido, o valor por omissao `http://localhost:11434` e usado.
+Para iniciar o Ollama: `ollama serve`. Para instalar modelos: `ollama pull <nome>`.
 """)
 
 st.divider()

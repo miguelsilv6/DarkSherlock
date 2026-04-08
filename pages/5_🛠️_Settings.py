@@ -17,15 +17,7 @@ import streamlit as st
 from llm_utils import get_model_choices
 from llm import PRESET_PROMPTS
 from health import check_llm_health, check_search_engines, check_tor_proxy, rotate_tor_circuit
-from config import (
-    OPENAI_API_KEY,
-    ANTHROPIC_API_KEY,
-    GOOGLE_API_KEY,
-    OPENROUTER_API_KEY,
-    OPENROUTER_BASE_URL,
-    OLLAMA_BASE_URL,
-    LLAMA_CPP_BASE_URL,
-)
+from config import OLLAMA_BASE_URL
 from sidebar import render_sidebar
 from audit import setup_file_logging
 
@@ -86,10 +78,6 @@ st.markdown(
     </style>""",
     unsafe_allow_html=True,
 )
-
-
-def _env_is_set(value) -> bool:
-    return bool(value and str(value).strip() and "your_" not in str(value))
 
 
 # ---------------------------------------------------------------------------
@@ -222,26 +210,12 @@ st.text_area(
 # ---------------------------------------------------------------------------
 st.divider()
 st.header("Provider Configuration")
-st.caption("Estado das chaves de API e servidores locais configurados no `.env`")
+st.caption("Estado do servidor Ollama local configurado no `.env`")
 
-_providers = [
-    ("OpenAI",      OPENAI_API_KEY,     True),
-    ("Anthropic",   ANTHROPIC_API_KEY,  True),
-    ("Google",      GOOGLE_API_KEY,     True),
-    ("OpenRouter",  OPENROUTER_API_KEY, True),
-    ("Ollama",      OLLAMA_BASE_URL,    False),
-    ("llama.cpp",   LLAMA_CPP_BASE_URL, False),
-]
-
-col_a, col_b = st.columns(2)
-for i, (name, value, is_cloud) in enumerate(_providers):
-    col = col_a if i % 2 == 0 else col_b
-    if _env_is_set(value):
-        col.success(f"**{name}** — configured", icon="✅")
-    elif is_cloud:
-        col.warning(f"**{name}** — API key not set", icon="⚠️")
-    else:
-        col.info(f"**{name}** — not configured *(optional)*", icon="🔵")
+if OLLAMA_BASE_URL:
+    st.success(f"**Ollama** — {OLLAMA_BASE_URL}", icon="✅")
+else:
+    st.warning("**Ollama** — `OLLAMA_BASE_URL` não definido no `.env`", icon="⚠️")
 
 # ---------------------------------------------------------------------------
 # Health Checks

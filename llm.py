@@ -29,16 +29,9 @@ para investigação defensiva e resposta a incidentes (DFIR).
 
 import re
 import logging
-import openai
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from llm_utils import _common_llm_params, resolve_model_config, get_model_choices
-from config import (
-    OPENAI_API_KEY,
-    ANTHROPIC_API_KEY,
-    GOOGLE_API_KEY,
-    OPENROUTER_API_KEY,
-)
 
 # ---------------------------------------------------------------------------
 # Expressões regulares pré-compiladas ao nível do módulo.
@@ -99,70 +92,14 @@ def get_llm(model_choice):
     llm_class = config["class"]
     model_specific_params = config["constructor_params"]
 
-    # Combina os parâmetros comuns a todos os modelos (e.g., temperatura,
-    # timeout) com os parâmetros específicos deste modelo.
-    # Os parâmetros específicos do modelo têm precedência em caso de conflito,
-    # permitindo que cada modelo sobreponha os valores por omissão.
+    # Combina os parâmetros comuns a todos os modelos com os parâmetros
+    # específicos deste modelo. Os específicos têm precedência em conflito.
     all_params = {**_common_llm_params, **model_specific_params}
-
-    # Valida que as credenciais de API necessárias existem antes de
-    # tentar qualquer chamada à API, evitando erros tardios e confusos
-    _ensure_credentials(model_choice, llm_class, model_specific_params)
 
     # Create the LLM instance using the gathered parameters
     llm_instance = llm_class(**all_params)
 
     return llm_instance
-
-
-def _ensure_credentials(model_choice: str, llm_class, model_params: dict) -> None:
-    """
-    Verifica se as credenciais de API necessárias estão configuradas para o
-    fornecedor do modelo selecionado.
-
-    Esta função inspeciona a classe LLM instanciada para determinar o
-    fornecedor (Anthropic, Google, OpenAI ou OpenRouter) e verifica se a
-    chave de API correspondente está definida no ficheiro .env. Emite um
-    erro claro e informativo caso a chave esteja em falta, orientando o
-    utilizador a configurá-la antes de executar a ferramenta.
-
-    Parâmetros:
-        model_choice (str): Nome do modelo selecionado (usado na mensagem de erro).
-        llm_class: A classe LLM resolvida (e.g., ChatOpenAI, ChatAnthropic).
-        model_params (dict): Parâmetros específicos do modelo, incluindo
-                             opcionalmente 'base_url' para distinguir OpenRouter
-                             de OpenAI direto.
-
-    Levanta:
-        ValueError: Se a chave de API necessária não estiver configurada.
-    """
-
-    def _require(key_value, env_var, provider_name):
-        # Se a chave existir e não for vazia, não há nada a fazer
-        if key_value:
-            return
-        # Caso contrário, informa o utilizador de forma clara qual a variável
-        # de ambiente que precisa de ser adicionada ao ficheiro .env
-        raise ValueError(
-            f"{provider_name} model '{model_choice}' selected but `{env_var}` is not set.\n"
-            "Add it to your .env file or export it before running the app."
-        )
-
-    # Obtém o nome da classe como string para comparação por nome de fornecedor
-    class_name = getattr(llm_class, "__name__", str(llm_class))
-
-    if "ChatAnthropic" in class_name:
-        _require(ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY", "Anthropic")
-    elif "ChatGoogleGenerativeAI" in class_name:
-        _require(GOOGLE_API_KEY, "GOOGLE_API_KEY", "Google Gemini")
-    elif "ChatOpenAI" in class_name:
-        # A classe ChatOpenAI é partilhada entre OpenAI e OpenRouter;
-        # a distinção é feita pela presença de "openrouter" na base_url
-        base_url = (model_params or {}).get("base_url", "").lower()
-        if "openrouter" in base_url:
-            _require(OPENROUTER_API_KEY, "OPENROUTER_API_KEY", "OpenRouter")
-        else:
-            _require(OPENAI_API_KEY, "OPENAI_API_KEY", "OpenAI")
 
 
 # Dicionário de contexto de refinamento por preset de investigação.
