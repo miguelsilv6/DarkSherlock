@@ -240,6 +240,7 @@ def render_sidebar():
             "Research Domain",
             list(preset_options.keys()),
             key="preset_select",
+            help="Also selectable from the main page before running a query.",
         )
         # Converte a etiqueta seleccionada para o identificador interno do preset
         selected_preset = preset_options[selected_preset_label]

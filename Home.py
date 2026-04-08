@@ -280,20 +280,124 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# CSS personalizado injetado na página para estilizar a hiperligação de
-# transferência do relatório final. O Streamlit não expõe diretamente
-# controlos de estilo para elementos HTML arbitrários, pelo que a injeção
-# via `st.markdown(..., unsafe_allow_html=True)` é a abordagem padrão.
+# CSS futurista — tema cyber/terminal para o DarkSherlock.
+# Injeta estilos globais para tipografia monoespaçada, glow no input de pesquisa,
+# botões com estilo neon, pills de preset com highlight, e containers do pipeline.
 st.markdown(
     """
     <style>
-            .aStyle {
-                font-size: 18px;
-                font-weight: bold;
-                padding: 5px;
-                padding-left: 0px;
-                text-align: left;
-            }
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace !important;
+    }
+
+    h1 {
+        font-size: 1.55rem !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.12em !important;
+        text-transform: uppercase !important;
+        color: #00ff9f !important;
+        border-bottom: 1px solid #00ff9f33 !important;
+        padding-bottom: 0.4rem !important;
+        margin-bottom: 1.4rem !important;
+    }
+    h2, h3 { letter-spacing: 0.06em; color: #a0f0c8; }
+
+    /* Input de pesquisa com glow neon */
+    input[type="text"] {
+        background-color: #0d0d14 !important;
+        border: 1px solid #00ff9f55 !important;
+        border-radius: 4px !important;
+        color: #e2e8f0 !important;
+        caret-color: #00ff9f !important;
+        transition: border-color 0.25s ease, box-shadow 0.25s ease !important;
+        font-family: inherit !important;
+    }
+    input[type="text"]:focus {
+        border-color: #00ff9f !important;
+        box-shadow: 0 0 0 1px #00ff9f, 0 0 14px #00ff9f55 !important;
+        outline: none !important;
+    }
+
+    /* Botão primário (Run / form submit) */
+    button[kind="primaryFormSubmit"],
+    button[data-testid="baseButton-primary"],
+    .stButton > button[kind="primary"] {
+        background-color: #00ff9f14 !important;
+        color: #00ff9f !important;
+        border: 1px solid #00ff9f !important;
+        border-radius: 4px !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.08em !important;
+        text-transform: uppercase !important;
+        transition: background-color 0.2s ease, box-shadow 0.2s ease !important;
+    }
+    button[kind="primaryFormSubmit"]:hover,
+    button[data-testid="baseButton-primary"]:hover,
+    .stButton > button[kind="primary"]:hover {
+        background-color: #00ff9f2a !important;
+        box-shadow: 0 0 10px #00ff9f55 !important;
+    }
+
+    /* Botões secundários (download, load, etc.) */
+    .stButton > button, .stDownloadButton > button {
+        background-color: transparent !important;
+        color: #a0f0c8 !important;
+        border: 1px solid #a0f0c833 !important;
+        border-radius: 4px !important;
+        transition: border-color 0.2s ease !important;
+    }
+    .stButton > button:hover, .stDownloadButton > button:hover {
+        border-color: #00ff9f !important;
+        color: #00ff9f !important;
+    }
+
+    /* Containers das etapas do pipeline e expanders */
+    [data-testid="stStatusWidget"], div[data-testid="stExpander"] {
+        border: 1px solid #00ff9f22 !important;
+        border-radius: 6px !important;
+        background-color: #0d0d18 !important;
+    }
+
+    /* Pills do selector de preset */
+    div[data-testid="stPillsButton"] button {
+        background-color: #0d0d18 !important;
+        border: 1px solid #00ff9f33 !important;
+        color: #7a9e8e !important;
+        border-radius: 4px !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.04em !important;
+        transition: all 0.2s ease !important;
+    }
+    div[data-testid="stPillsButton"] button[aria-checked="true"] {
+        background-color: #00ff9f18 !important;
+        border-color: #00ff9f !important;
+        color: #00ff9f !important;
+        box-shadow: 0 0 8px #00ff9f44 !important;
+    }
+    div[data-testid="stPillsButton"] button:hover {
+        border-color: #00ff9f88 !important;
+        color: #c0ffe0 !important;
+    }
+
+    /* Sidebar com borda neon subtil */
+    [data-testid="stSidebar"] { border-right: 1px solid #00ff9f1a !important; }
+
+    /* Alertas com borda esquerda colorida */
+    [data-testid="stAlertContainer"][kind="success"] {
+        border-left: 3px solid #00ff9f !important;
+        background-color: #00ff9f0d !important;
+    }
+    [data-testid="stAlertContainer"][kind="warning"] { border-left: 3px solid #ffcc00 !important; }
+    [data-testid="stAlertContainer"][kind="error"]   { border-left: 3px solid #ff4444 !important; }
+
+    /* Hiperligação de download legacy */
+    .aStyle {
+        font-size: 18px; font-weight: bold;
+        padding: 5px; padding-left: 0px;
+        text-align: left; color: #00ff9f;
+    }
     </style>""",
     unsafe_allow_html=True,
 )
@@ -632,6 +736,48 @@ if "last_engine_check" in st.session_state:
         )
     else:
         st.success(f"All {total} engines online (last check: {check_time})")
+
+# ---------------------------------------------------------------------------
+# Selector de domínio de investigação (preset)
+# ---------------------------------------------------------------------------
+# Apresentado visualmente na página principal antes do formulário de pesquisa,
+# permitindo ao utilizador escolher o contexto de análise antes de submeter.
+# A selecção sincroniza-se com o selector da sidebar via `st.session_state`
+# (chave partilhada "preset_select"), de forma que ambos ficam sempre em sync.
+
+_PRESET_LABELS = [
+    "Dark Web Threat Intel",
+    "Ransomware / Malware Focus",
+    "Personal / Identity Investigation",
+    "Corporate Espionage / Data Leaks",
+]
+_PRESET_ICONS = ["🌐", "🦠", "🪪", "🏢"]
+_PRESET_PILLS = [f"{icon}  {label}" for icon, label in zip(_PRESET_ICONS, _PRESET_LABELS)]
+
+# Deriva o preset por defeito do estado da sidebar (se já foi seleccionado
+# numa visita anterior) ou usa o primeiro como fallback.
+_current_sidebar_label = st.session_state.get("preset_select", _PRESET_LABELS[0])
+_default_pill_index = (
+    _PRESET_LABELS.index(_current_sidebar_label)
+    if _current_sidebar_label in _PRESET_LABELS
+    else 0
+)
+
+st.markdown("##### Investigation Domain")
+_selected_pill = st.pills(
+    label="Investigation Domain",
+    options=_PRESET_PILLS,
+    default=_PRESET_PILLS[_default_pill_index],
+    selection_mode="single",
+    label_visibility="collapsed",
+    key="preset_pills",
+)
+
+# Sincroniza a pill seleccionada com a chave da sidebar para manter ambos em sync.
+# O re-render subsequente da sidebar lê "preset_select" e mostra a selecção correcta.
+if _selected_pill is not None:
+    _synced_label = _selected_pill.split("  ", 1)[1]
+    st.session_state["preset_select"] = _synced_label
 
 # ---------------------------------------------------------------------------
 # Formulário de pesquisa principal

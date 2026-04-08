@@ -44,6 +44,75 @@ selected_preset = settings["selected_preset"]
 selected_preset_label = settings["selected_preset_label"]
 custom_instructions = settings["custom_instructions"]
 
+# CSS futurista — idêntico ao Home.py para paridade visual entre páginas.
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace !important;
+    }
+    h1 {
+        font-size: 1.55rem !important; font-weight: 700 !important;
+        letter-spacing: 0.12em !important; text-transform: uppercase !important;
+        color: #00ff9f !important; border-bottom: 1px solid #00ff9f33 !important;
+        padding-bottom: 0.4rem !important; margin-bottom: 1.4rem !important;
+    }
+    h2, h3 { letter-spacing: 0.06em; color: #a0f0c8; }
+    input[type="text"] {
+        background-color: #0d0d14 !important; border: 1px solid #00ff9f55 !important;
+        border-radius: 4px !important; color: #e2e8f0 !important;
+        caret-color: #00ff9f !important; font-family: inherit !important;
+        transition: border-color 0.25s ease, box-shadow 0.25s ease !important;
+    }
+    input[type="text"]:focus {
+        border-color: #00ff9f !important;
+        box-shadow: 0 0 0 1px #00ff9f, 0 0 14px #00ff9f55 !important;
+        outline: none !important;
+    }
+    button[kind="primaryFormSubmit"],
+    button[data-testid="baseButton-primary"],
+    .stButton > button[kind="primary"] {
+        background-color: #00ff9f14 !important; color: #00ff9f !important;
+        border: 1px solid #00ff9f !important; border-radius: 4px !important;
+        font-weight: 600 !important; letter-spacing: 0.08em !important;
+        text-transform: uppercase !important;
+    }
+    button[kind="primaryFormSubmit"]:hover,
+    button[data-testid="baseButton-primary"]:hover,
+    .stButton > button[kind="primary"]:hover {
+        background-color: #00ff9f2a !important; box-shadow: 0 0 10px #00ff9f55 !important;
+    }
+    .stButton > button, .stDownloadButton > button {
+        background-color: transparent !important; color: #a0f0c8 !important;
+        border: 1px solid #a0f0c833 !important; border-radius: 4px !important;
+    }
+    .stButton > button:hover, .stDownloadButton > button:hover {
+        border-color: #00ff9f !important; color: #00ff9f !important;
+    }
+    [data-testid="stStatusWidget"], div[data-testid="stExpander"] {
+        border: 1px solid #00ff9f22 !important; border-radius: 6px !important;
+        background-color: #0d0d18 !important;
+    }
+    div[data-testid="stPillsButton"] button {
+        background-color: #0d0d18 !important; border: 1px solid #00ff9f33 !important;
+        color: #7a9e8e !important; border-radius: 4px !important;
+        font-weight: 500 !important; letter-spacing: 0.04em !important;
+        transition: all 0.2s ease !important;
+    }
+    div[data-testid="stPillsButton"] button[aria-checked="true"] {
+        background-color: #00ff9f18 !important; border-color: #00ff9f !important;
+        color: #00ff9f !important; box-shadow: 0 0 8px #00ff9f44 !important;
+    }
+    div[data-testid="stPillsButton"] button:hover {
+        border-color: #00ff9f88 !important; color: #c0ffe0 !important;
+    }
+    [data-testid="stSidebar"] { border-right: 1px solid #00ff9f1a !important; }
+    </style>""",
+    unsafe_allow_html=True,
+)
+
 # --- Past Investigations (sidebar) ---
 INVESTIGATIONS_DIR = Path("investigations")
 
@@ -131,6 +200,48 @@ if "last_engine_check" in st.session_state:
         )
     else:
         st.success(f"All {total} engines online (last check: {check_time})")
+
+# ---------------------------------------------------------------------------
+# Selector de domínio de investigação (preset pills)
+# ---------------------------------------------------------------------------
+_PRESET_LABELS_INV = [
+    "Dark Web Threat Intel",
+    "Ransomware / Malware Focus",
+    "Personal / Identity Investigation",
+    "Corporate Espionage / Data Leaks",
+]
+_PRESET_MAP_INV = {
+    "Dark Web Threat Intel": "threat_intel",
+    "Ransomware / Malware Focus": "ransomware_malware",
+    "Personal / Identity Investigation": "personal_identity",
+    "Corporate Espionage / Data Leaks": "corporate_espionage",
+}
+_PRESET_ICONS_INV = ["🌐", "🦠", "🪪", "🏢"]
+_PRESET_PILLS_INV = [f"{icon}  {label}" for icon, label in zip(_PRESET_ICONS_INV, _PRESET_LABELS_INV)]
+
+_current_label_inv = st.session_state.get("preset_select", _PRESET_LABELS_INV[0])
+_default_idx_inv = (
+    _PRESET_LABELS_INV.index(_current_label_inv)
+    if _current_label_inv in _PRESET_LABELS_INV
+    else 0
+)
+
+st.markdown("##### Investigation Domain")
+_selected_pill_inv = st.pills(
+    label="Investigation Domain",
+    options=_PRESET_PILLS_INV,
+    default=_PRESET_PILLS_INV[_default_idx_inv],
+    selection_mode="single",
+    label_visibility="collapsed",
+    key="preset_pills",
+)
+
+# Sincroniza com a sidebar e sobrepõe o preset retornado por render_sidebar()
+if _selected_pill_inv is not None:
+    _synced_label_inv = _selected_pill_inv.split("  ", 1)[1]
+    st.session_state["preset_select"] = _synced_label_inv
+    selected_preset = _PRESET_MAP_INV.get(_synced_label_inv, selected_preset)
+    selected_preset_label = _synced_label_inv
 
 # Query input
 with st.form("pipeline_search_form", clear_on_submit=True):
