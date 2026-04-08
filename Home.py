@@ -754,6 +754,19 @@ _PRESET_LABELS = [
 _PRESET_ICONS = ["🌐", "🦠", "🪪", "🏢"]
 _PRESET_PILLS = [f"{icon}  {label}" for icon, label in zip(_PRESET_ICONS, _PRESET_LABELS)]
 
+
+def _sync_preset_from_pills():
+    """Callback on_change das pills → sincroniza com o selectbox da sidebar.
+
+    Os callbacks do Streamlit correm no INÍCIO do próximo ciclo de render,
+    antes de qualquer widget ser instanciado. Por isso é seguro escrever em
+    'preset_select' aqui — o selectbox ainda não existe nesse momento.
+    """
+    val = st.session_state.get("preset_pills")
+    if val:
+        st.session_state["preset_select"] = val.split("  ", 1)[1]
+
+
 # Deriva o preset por defeito do estado da sidebar (se já foi seleccionado
 # numa visita anterior) ou usa o primeiro como fallback.
 _current_sidebar_label = st.session_state.get("preset_select", _PRESET_LABELS[0])
@@ -764,20 +777,15 @@ _default_pill_index = (
 )
 
 st.markdown("##### Investigation Domain")
-_selected_pill = st.pills(
+st.pills(
     label="Investigation Domain",
     options=_PRESET_PILLS,
     default=_PRESET_PILLS[_default_pill_index],
     selection_mode="single",
     label_visibility="collapsed",
     key="preset_pills",
+    on_change=_sync_preset_from_pills,
 )
-
-# Sincroniza a pill seleccionada com a chave da sidebar para manter ambos em sync.
-# O re-render subsequente da sidebar lê "preset_select" e mostra a selecção correcta.
-if _selected_pill is not None:
-    _synced_label = _selected_pill.split("  ", 1)[1]
-    st.session_state["preset_select"] = _synced_label
 
 # ---------------------------------------------------------------------------
 # Formulário de pesquisa principal

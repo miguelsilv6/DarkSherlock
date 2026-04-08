@@ -219,6 +219,14 @@ _PRESET_MAP_INV = {
 _PRESET_ICONS_INV = ["🌐", "🦠", "🪪", "🏢"]
 _PRESET_PILLS_INV = [f"{icon}  {label}" for icon, label in zip(_PRESET_ICONS_INV, _PRESET_LABELS_INV)]
 
+
+def _sync_preset_inv():
+    """Callback on_change das pills → sincroniza com o selectbox da sidebar."""
+    val = st.session_state.get("preset_pills")
+    if val:
+        st.session_state["preset_select"] = val.split("  ", 1)[1]
+
+
 _current_label_inv = st.session_state.get("preset_select", _PRESET_LABELS_INV[0])
 _default_idx_inv = (
     _PRESET_LABELS_INV.index(_current_label_inv)
@@ -227,21 +235,22 @@ _default_idx_inv = (
 )
 
 st.markdown("##### Investigation Domain")
-_selected_pill_inv = st.pills(
+st.pills(
     label="Investigation Domain",
     options=_PRESET_PILLS_INV,
     default=_PRESET_PILLS_INV[_default_idx_inv],
     selection_mode="single",
     label_visibility="collapsed",
     key="preset_pills",
+    on_change=_sync_preset_inv,
 )
 
-# Sincroniza com a sidebar e sobrepõe o preset retornado por render_sidebar()
-if _selected_pill_inv is not None:
-    _synced_label_inv = _selected_pill_inv.split("  ", 1)[1]
-    st.session_state["preset_select"] = _synced_label_inv
-    selected_preset = _PRESET_MAP_INV.get(_synced_label_inv, selected_preset)
-    selected_preset_label = _synced_label_inv
+# Sobrepõe o preset com o valor das pills (se já foi seleccionado via callback)
+_pills_val = st.session_state.get("preset_pills")
+if _pills_val:
+    _pills_label = _pills_val.split("  ", 1)[1]
+    selected_preset = _PRESET_MAP_INV.get(_pills_label, selected_preset)
+    selected_preset_label = _pills_label
 
 # Query input
 with st.form("pipeline_search_form", clear_on_submit=True):
