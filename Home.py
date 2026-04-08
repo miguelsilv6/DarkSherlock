@@ -41,16 +41,7 @@ from audit import log_investigation, setup_file_logging
 
 # Configura o logging para ficheiro (captura debug/info de todos os módulos)
 setup_file_logging()
-from config import (
-    OPENAI_API_KEY,
-    ANTHROPIC_API_KEY,
-    GOOGLE_API_KEY,
-    OPENROUTER_API_KEY,
-    OPENROUTER_BASE_URL,
-    OLLAMA_BASE_URL,
-    LLAMA_CPP_BASE_URL,
-)
-from health import check_llm_health, check_search_engines, check_tor_proxy
+from health import check_search_engines, check_tor_proxy
 
 
 # ---------------------------------------------------------------------------
@@ -404,265 +395,18 @@ st.markdown(
 
 
 # ---------------------------------------------------------------------------
-# Barra lateral — Cabeçalho e definições do pipeline
+# Barra lateral — apenas investigações anteriores
+# (configurações movidas para pages/5_🛠️_Settings.py)
 # ---------------------------------------------------------------------------
 
 st.sidebar.title("DarkSherlock")
 st.sidebar.text("AI-Powered Dark Web OSINT Tool")
-st.sidebar.subheader("Settings")
-
-def _env_is_set(value) -> bool:
-    """Verifica se uma variável de configuração foi efectivamente definida.
-
-    Considera que uma variável está configurada apenas se:
-      - não for `None` nem uma cadeia vazia;
-      - não contiver o prefixo `"your_"`, que é o valor de substituição
-        utilizado nos ficheiros de exemplo `.env.example`.
-
-    Args:
-        value: Valor lido da configuração (pode ser `None` ou cadeia de texto).
-
-    Returns:
-        `True` se a variável parecer válida; `False` caso contrário.
-    """
-    return bool(value and str(value).strip() and "your_" not in str(value))
-
-# Obtém a lista de modelos disponíveis com base nas chaves de API configuradas
-# e nos fornecedores locais detectados (Ollama, llama.cpp).
-model_options = get_model_choices()
-
-# Tenta selecionar "gpt4o" como modelo pré-definido; se não estiver disponível,
-# usa o primeiro da lista (índice 0). Esta lógica evita um IndexError caso a
-# lista mude entre versões ou configurações de instalação.
-default_model_index = (
-    next(
-        (idx for idx, name in enumerate(model_options) if name.lower() == "gpt4o"),
-        0,
-    )
-    if model_options
-    else 0
-)
-
-# Avisa o utilizador se nenhum modelo estiver disponível — situação que impede
-# qualquer investigação de ser executada.
-if not model_options:
-    st.sidebar.error(
-        "No LLM models available.\n\n"
-        "No API keys or local providers are configured. "
-        "Set at least one in your `.env` file and restart DarkSherlock.\n\n"
-        "See **Provider Configuration** below for details."
-    )
-
-# Caixa de seleção do modelo de LLM. O valor escolhido aqui determina qual
-# fornecedor é instanciado na Etapa 1 do pipeline.
-model = st.sidebar.selectbox(
-    "Select LLM Model",
-    model_options,
-    index=default_model_index,
-    key="model_select",
-)
-
-# Informa o utilizador de que modelos Ollama locais são detectados
-# automaticamente — útil para quem adicionou um novo modelo ao Ollama e
-# não percebe por que aparece na lista sem ter sido configurado manualmente.
-if any(name not in {"gpt4o", "gpt-4.1", "claude-3-5-sonnet-latest", "llama3.1", "gemini-2.5-flash"} for name in model_options):
-    st.sidebar.caption("Locally detected Ollama models are automatically added to this list.")
-
-# Controlo de fios de execução: mais fios aceleram o scraping e a pesquisa
-# paralela, mas aumentam o consumo de recursos e podem sobrecarregar o Tor.
-threads = st.sidebar.slider("Scraping Threads", 1, 16, 4, key="thread_slider")
-
-# Limita o número de resultados brutos enviados ao LLM na fase de filtragem.
-# Valores elevados aumentam a cobertura mas também o custo e a latência.
-max_results = st.sidebar.slider(
-    "Max Results to Filter", 10, 100, 50, key="max_results_slider",
-    help="Cap the number of raw search results passed to the LLM filter step.",
-)
-
-# Limita o número de páginas a extrair após a filtragem.
-# O scraping de páginas .onion é lento; este parâmetro controla o equilíbrio
-# entre cobertura e tempo de espera.
-max_scrape = st.sidebar.slider(
-    "Max Pages to Scrape", 3, 20, 10, key="max_scrape_slider",
-    help="Cap the number of filtered results that get scraped for content.",
-)
-
-# ---------------------------------------------------------------------------
-# Barra lateral — Estado dos fornecedores de LLM
-# ---------------------------------------------------------------------------
-
-st.sidebar.divider()
-st.sidebar.subheader("Provider Configuration")
-
-# Lista de fornecedores suportados com o respectivo valor de configuração e
-# um indicador booleano que distingue fornecedores na nuvem (requerem chave
-# de API) de fornecedores locais (opcionais, baseados em URL).
-_providers = [
-    ("OpenAI",      OPENAI_API_KEY,     True),
-    ("Anthropic",   ANTHROPIC_API_KEY,  True),
-    ("Google",      GOOGLE_API_KEY,     True),
-    ("OpenRouter",  OPENROUTER_API_KEY, True),
-    ("Ollama",      OLLAMA_BASE_URL,    False),
-    ("llama.cpp",   LLAMA_CPP_BASE_URL, False),
-]
-
-# Apresenta um ícone de estado por fornecedor:
-#   ✅ — configurado e aparentemente válido
-#   ⚠️ — chave de API na nuvem em falta (funcionalmente bloqueante)
-#   🔵 — fornecedor local não configurado (opcional, não bloqueia)
-for name, value, is_cloud in _providers:
-    if _env_is_set(value):
-        st.sidebar.markdown(f"&ensp;✅ **{name}** — configured")
-    elif is_cloud:
-        st.sidebar.markdown(f"&ensp;⚠️ **{name}** — API key not set")
-    else:
-        st.sidebar.markdown(f"&ensp;🔵 **{name}** — not configured *(optional)*")
-
-# ---------------------------------------------------------------------------
-# Barra lateral — Definições de prompt (domínio de investigação)
-# ---------------------------------------------------------------------------
-
-# Este expansor agrupa as opções avançadas de prompt para não sobrecarregar
-# a interface por omissão — o utilizador expande-o apenas quando necessário.
-with st.sidebar.expander("Prompt Settings"):
-    # Mapeamento entre etiquetas legíveis e identificadores internos dos
-    # prompts de sistema pré-definidos. Os identificadores são usados como
-    # chaves em `PRESET_PROMPTS` (definido em `llm.py`).
-    preset_options = {
-        "Dark Web Threat Intel": "threat_intel",
-        "Ransomware / Malware Focus": "ransomware_malware",
-        "Personal / Identity Investigation": "personal_identity",
-        "Corporate Espionage / Data Leaks": "corporate_espionage",
-    }
-
-    # Textos de ajuda contextuais que orientam o utilizador sobre que tipo
-    # de instrução personalizada faz sentido para cada domínio de investigação.
-    preset_placeholders = {
-        "threat_intel": "e.g. Pay extra attention to cryptocurrency wallet addresses and exchange names.",
-        "ransomware_malware": "e.g. Highlight any references to double-extortion tactics or known ransomware-as-a-service affiliates.",
-        "personal_identity": "e.g. Flag any passport or government ID numbers and note which country they appear to be from.",
-        "corporate_espionage": "e.g. Prioritize any mentions of source code repositories, API keys, or internal Slack/email dumps.",
-    }
-
-    # Seleção do domínio de investigação — determina o prompt de sistema
-    # enviado ao LLM nas fases de filtragem e geração do relatório.
-    selected_preset_label = st.selectbox(
-        "Research Domain",
-        list(preset_options.keys()),
-        key="preset_select",
-    )
-    selected_preset = preset_options[selected_preset_label]
-
-    # Apresenta o prompt de sistema associado ao domínio escolhido em modo
-    # só de leitura, para que o utilizador saiba exactamente o que será
-    # enviado ao LLM sem poder modificar acidentalmente o texto base.
-    st.text_area(
-        "System Prompt",
-        value=PRESET_PROMPTS[selected_preset].strip(),
-        height=200,
-        disabled=True,
-        key="system_prompt_display",
-    )
-
-    # Campo de instruções personalizadas: permite ao utilizador acrescentar
-    # directivas adicionais ao prompt de sistema sem alterar o texto base.
-    # O placeholder muda consoante o domínio para dar sugestões relevantes.
-    custom_instructions = st.text_area(
-        "Custom Instructions (optional)",
-        placeholder=preset_placeholders[selected_preset],
-        height=100,
-        key="custom_instructions",
-    )
-
-# ---------------------------------------------------------------------------
-# Barra lateral — Verificações de saúde (health checks)
-# ---------------------------------------------------------------------------
-
-st.sidebar.divider()
-st.sidebar.subheader("Health Checks")
-
-# Verifica a ligação ao LLM selecionado enviando um pedido de teste mínimo.
-# Útil para confirmar que a chave de API está válida antes de iniciar um
-# pipeline demorado que falharia apenas na Etapa 1.
-if st.sidebar.button("Check LLM Connection", use_container_width=True):
-    with st.sidebar:
-        with st.spinner(f"Testing {model}..."):
-            result = check_llm_health(model)
-        if result["status"] == "up":
-            st.sidebar.success(
-                f"**{result['provider']}** — Connected ({result['latency_ms']}ms)"
-            )
-        else:
-            st.sidebar.error(
-                f"**{result['provider']}** — Failed\n\n{result['error']}"
-            )
-
-# Verifica o proxy Tor e, se estiver acessível, testa individualmente cada
-# motor de pesquisa da dark web configurado. A verificação é feita em dois
-# passos porque sem o Tor os motores .onion são sempre inacessíveis — não
-# faria sentido tentar alcançá-los se o proxy já estiver em baixo.
-if st.sidebar.button("Check Search Engines", use_container_width=True):
-    with st.sidebar:
-        with st.spinner("Checking Tor proxy..."):
-            tor_result = check_tor_proxy()
-        if tor_result["status"] == "down":
-            # O Tor não está a funcionar — informa o utilizador com o
-            # comando necessário para o iniciar em sistemas Linux/systemd.
-            st.sidebar.error(
-                f"**Tor Proxy** — Not reachable\n\n{tor_result['error']}\n\n"
-                "Ensure Tor is running: `sudo systemctl start tor`"
-            )
-        else:
-            st.sidebar.success(
-                f"**Tor Proxy** — Connected ({tor_result['latency_ms']}ms)"
-            )
-            with st.spinner("Pinging active search engines via Tor..."):
-                engine_results = check_search_engines()
-
-            # Guarda os resultados no estado de sessão para que o banner
-            # de notificação no corpo principal da página possa exibi-los
-            # sem repetir as verificações (que são lentas via Tor).
-            st.session_state["last_engine_check"] = {
-                "results": engine_results,
-                "timestamp": datetime.now().isoformat(),
-            }
-
-            up_count = sum(1 for r in engine_results if r["status"] == "up")
-            total = len(engine_results)
-
-            # Apresenta um resumo agregado antes dos detalhes por motor,
-            # para que o utilizador perceba o estado global de um relance.
-            if up_count == total:
-                st.sidebar.success(f"All {total} engines reachable")
-            elif up_count > 0:
-                st.sidebar.warning(f"{up_count}/{total} engines reachable")
-            else:
-                st.sidebar.error(f"0/{total} engines reachable")
-
-            # Detalhe por motor: verde indica disponível, vermelho indica falha.
-            for r in engine_results:
-                if r["status"] == "up":
-                    st.sidebar.markdown(
-                        f"&ensp;🟢 **{r['name']}** — {r['latency_ms']}ms"
-                    )
-                else:
-                    st.sidebar.markdown(
-                        f"&ensp;🔴 **{r['name']}** — {r['error']}"
-                    )
-
-# ---------------------------------------------------------------------------
-# Barra lateral — Investigações anteriores
-# ---------------------------------------------------------------------------
 
 st.sidebar.divider()
 st.sidebar.subheader("Past Investigations")
 
-# Carrega todas as investigações guardadas em disco para popular o seletor.
 saved_investigations = load_investigations()
-
 if saved_investigations:
-    # Constrói etiquetas legíveis combinando o timestamp e os primeiros 40
-    # caracteres da consulta original, para facilitar a identificação visual.
     inv_labels = [
         f"{inv['_filename'].replace('investigation_','').replace('.json','')} — {inv['query'][:40]}"
         for inv in saved_investigations
@@ -672,15 +416,29 @@ if saved_investigations:
     )
     if selected_inv_label != "(none)":
         selected_inv_idx = inv_labels.index(selected_inv_label)
-        # Só carrega quando o utilizador clica em "Load", evitando carregar
-        # automaticamente ao mudar a seleção (o que poderia ser indesejado).
         if st.sidebar.button("Load", use_container_width=True, key="load_inv_btn"):
-            # Armazena a investigação no estado de sessão e força um re-render
-            # da página para que o conteúdo carregado apareça imediatamente.
             st.session_state["loaded_investigation"] = saved_investigations[selected_inv_idx]
             st.rerun()
 else:
     st.sidebar.caption("No saved investigations yet.")
+
+# ---------------------------------------------------------------------------
+# Lê configurações do session_state (definidas em Settings)
+# ---------------------------------------------------------------------------
+_preset_options = {
+    "Dark Web Threat Intel":             "threat_intel",
+    "Ransomware / Malware Focus":        "ransomware_malware",
+    "Personal / Identity Investigation": "personal_identity",
+    "Corporate Espionage / Data Leaks":  "corporate_espionage",
+}
+_model_options = get_model_choices()
+model               = st.session_state.get("model_select",       _model_options[0] if _model_options else None)
+threads             = st.session_state.get("thread_slider",      4)
+max_results         = st.session_state.get("max_results_slider", 50)
+max_scrape          = st.session_state.get("max_scrape_slider",  10)
+selected_preset_label = st.session_state.get("preset_select",   "Dark Web Threat Intel")
+selected_preset     = _preset_options.get(selected_preset_label, "threat_intel")
+custom_instructions = st.session_state.get("custom_instructions", "")
 
 
 # ---------------------------------------------------------------------------
