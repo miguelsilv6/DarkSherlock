@@ -94,7 +94,7 @@ model_options = get_model_choices()
 
 default_model_index = (
     next(
-        (idx for idx, name in enumerate(model_options) if name.lower() == "gpt4o"),
+        (idx for idx, name in enumerate(model_options) if "dolphin" in name.lower()),
         0,
     )
     if model_options
@@ -115,11 +115,7 @@ else:
         key="model_select",
         help="Modelo utilizado em todas as etapas do pipeline: refinamento, filtragem e geração de relatório.",
     )
-    if any(
-        name not in {"gpt4o", "gpt-4.1", "claude-3-5-sonnet-latest", "llama3.1", "gemini-2.5-flash"}
-        for name in model_options
-    ):
-        st.caption("Modelos Ollama locais são detectados automaticamente.")
+    st.caption("Modelos Ollama são detectados automaticamente via API local.")
 
 # ---------------------------------------------------------------------------
 # Pipeline Settings
