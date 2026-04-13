@@ -20,7 +20,7 @@ def _fmt_ms(ms: int) -> str:
 from scrape import scrape_multiple
 from search import get_search_results
 from llm_utils import BufferedStreamingHandler, get_model_choices
-from llm import get_llm, refine_query, filter_results, generate_summary, PRESET_PROMPTS
+from llm import get_llm, refine_query, filter_results, generate_summary, filter_scraped_by_relevance, PRESET_PROMPTS
 from engine_manager import get_active_engines
 from report import compute_integrity_hashes, generate_forensic_pdf
 from audit import log_investigation, setup_file_logging
@@ -171,6 +171,7 @@ if saved_investigations:
         selected_inv_idx = inv_labels.index(selected_inv_label)
         if st.sidebar.button("Load", use_container_width=True, key="load_inv_btn"):
             st.session_state["loaded_investigation"] = saved_investigations[selected_inv_idx]
+            st.session_state.pop("pipeline_complete", None)
             st.rerun()
 else:
     st.sidebar.caption("No saved investigations yet.")
@@ -278,6 +279,43 @@ if "loaded_investigation" in st.session_state and not run_button:
             st.markdown(f"{i}. [{title}]({link})")
     st.subheader("Findings", divider="gray")
     st.markdown(inv["summary"])
+    st.divider()
+
+    # Botões de download — regenera o PDF a partir dos dados guardados
+    _inv_pdf_data = {
+        "audit_id": inv.get("audit_id", ""),
+        "query": inv["query"],
+        "refined_query": inv["refined_query"],
+        "model": inv["model"],
+        "preset": inv["preset"],
+        "timestamp_utc": inv.get("timestamp_utc", inv["timestamp"]),
+        "active_engines": inv.get("active_engines", []),
+        "sources": inv["sources"],
+        "integrity": inv.get("integrity", {}),
+        "summary": inv["summary"],
+        "results_found": len(inv["sources"]),
+        "results_scraped": len(inv["sources"]),
+    }
+    _inv_pdf_bytes = generate_forensic_pdf(_inv_pdf_data)
+    _inv_now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    _dl1, _dl2 = st.columns(2)
+    _dl1.download_button(
+        "⬇ Download Relatório PDF",
+        data=_inv_pdf_bytes,
+        file_name=f"relatorio_{inv.get('audit_id', 'inv')[:8]}_{_inv_now}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+        key="loaded_dl_pdf",
+    )
+    _dl2.download_button(
+        "⬇ Download Summary MD",
+        data=inv["summary"].encode(),
+        file_name=f"summary_{_inv_now}.md",
+        mime="text/markdown",
+        use_container_width=True,
+        key="loaded_dl_md",
+    )
+
     if st.button("Clear"):
         del st.session_state["loaded_investigation"]
         st.rerun()
@@ -286,6 +324,7 @@ if "loaded_investigation" in st.session_state and not run_button:
 # --- Pipeline Execution ---
 if run_button and query:
     st.session_state.pop("loaded_investigation", None)
+    st.session_state.pop("pipeline_complete", None)
     for k in ["refined", "results", "filtered", "scraped", "streamed_summary"]:
         st.session_state.pop(k, None)
 
@@ -375,6 +414,13 @@ if run_button and query:
             for url, content in st.session_state.scraped.items()
             if len(content) > 150
         }
+
+        # Filtra por relevância: descarta fontes cujo conteúdo scrapeado
+        # não menciona nenhuma keyword da query original.
+        pre_relevance_count = len(meaningful_scraped)
+        meaningful_scraped = filter_scraped_by_relevance(query, meaningful_scraped)
+        relevance_removed = pre_relevance_count - len(meaningful_scraped)
+
         # Estampar timestamp UTC de scraping e calcular hashes de integridade
         scraped_at_utc = datetime.now(timezone.utc).isoformat()
         for item in st.session_state.filtered:
@@ -387,7 +433,8 @@ if run_button and query:
         scraped_count = len(meaningful_scraped)
         failed_count = len(st.session_state.scraped) - scraped_count
         note = f" ({failed_count} inaccessible pages removed)" if failed_count else ""
-        st.write(f"Scraped **{scraped_count}** pages with content{note}")
+        relevance_note = f" ({relevance_removed} irrelevant pages removed)" if relevance_removed else ""
+        st.write(f"Scraped **{scraped_count}** pages with content{note}{relevance_note}")
         st.caption(f"Hash global SHA-256: `{integrity['overall_sha256'][:16]}...`")
 
         # Expander com conteúdo recolhido por fonte — auditabilidade e transparência
@@ -478,7 +525,24 @@ if run_button and query:
 
     st.success(f"Pipeline completed in {_fmt_ms(pipeline_ms)} — saved as `{_fname}`")
 
-    # Notes
+    # Guarda dados para apresentação persistente (sobrevive a reruns)
+    st.session_state["pipeline_complete"] = {
+        "audit_id": audit_id,
+        "query": query,
+        "refined": st.session_state.refined,
+        "model": model,
+        "preset_label": selected_preset_label,
+        "filtered": st.session_state.filtered,
+        "results_count": len(st.session_state.results),
+        "scraped_count": scraped_count,
+        "summary": st.session_state.streamed_summary,
+        "integrity": integrity,
+        "active_engines": [e["name"] for e in active_engines],
+        "pipeline_ms": pipeline_ms,
+        "fname": _fname,
+    }
+
+    # Apresentação inline imediata (durante o run do pipeline)
     with st.expander("Notes", expanded=False):
         st.markdown(f"**Refined Query:** `{st.session_state.refined}`")
         st.markdown(f"**Model:** `{model}` | **Domain:** {selected_preset_label}")
@@ -488,7 +552,6 @@ if run_button and query:
             f"**Scraped:** {scraped_count}"
         )
 
-    # Final findings display com botões de download
     with findings_container:
         st.markdown(st.session_state.streamed_summary)
         st.divider()
@@ -525,3 +588,71 @@ if run_button and query:
             mime="text/markdown",
             use_container_width=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# Apresentação persistente de resultados (sobrevive a reruns do Streamlit)
+# ---------------------------------------------------------------------------
+if "pipeline_complete" in st.session_state and not run_button and "loaded_investigation" not in st.session_state:
+    _pc = st.session_state["pipeline_complete"]
+
+    st.success(f"Pipeline completed in {_fmt_ms(_pc['pipeline_ms'])} — saved as `{_pc['fname']}`")
+
+    with st.expander("Notes", expanded=False):
+        st.markdown(f"**Refined Query:** `{_pc['refined']}`")
+        st.markdown(f"**Model:** `{_pc['model']}` | **Domain:** {_pc['preset_label']}")
+        st.markdown(
+            f"**Results found:** {_pc['results_count']} | "
+            f"**Filtered to:** {len(_pc['filtered'])} | "
+            f"**Scraped:** {_pc['scraped_count']}"
+        )
+
+    with st.expander(f"Sources ({len(_pc['filtered'])} results)", expanded=False):
+        st.caption("🧅 Links .onion: copia e abre no Tor Browser")
+        for _i, _item in enumerate(_pc["filtered"], 1):
+            _title = _item.get("title", "Untitled")
+            _link = _item.get("link", "")
+            if ".onion" in _link:
+                st.markdown(f"**{_i}. {_title}**")
+                st.code(_link, language=None)
+            else:
+                st.markdown(f"{_i}. [{_title}]({_link})")
+
+    st.subheader("Findings", divider="gray")
+    st.markdown(_pc["summary"])
+    st.divider()
+
+    _pc_pdf_data = {
+        "audit_id": _pc["audit_id"],
+        "query": _pc["query"],
+        "refined_query": _pc["refined"],
+        "model": _pc["model"],
+        "preset": _pc["preset_label"],
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "active_engines": _pc["active_engines"],
+        "sources": _pc["filtered"],
+        "integrity": _pc["integrity"],
+        "summary": _pc["summary"],
+        "results_found": _pc["results_count"],
+        "results_scraped": _pc["scraped_count"],
+    }
+    _pc_pdf_bytes = generate_forensic_pdf(_pc_pdf_data)
+
+    _pc_now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    _pc_dl1, _pc_dl2 = st.columns(2)
+    _pc_dl1.download_button(
+        label="⬇ Download Relatório PDF",
+        data=_pc_pdf_bytes,
+        file_name=f"relatorio_{_pc['audit_id'][:8]}_{_pc_now}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+        key="pc_dl_pdf",
+    )
+    _pc_dl2.download_button(
+        label="⬇ Download Summary MD",
+        data=_pc["summary"].encode(),
+        file_name=f"summary_{_pc_now}.md",
+        mime="text/markdown",
+        use_container_width=True,
+        key="pc_dl_md",
+    )

@@ -456,6 +456,54 @@ def _format_content_for_llm(content: dict) -> str:
     return separator.join(parts)
 
 
+def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int = 1) -> dict:
+    """
+    Filtra conteúdo scrapeado por relevância: mantém apenas fontes que
+    mencionam pelo menos `min_keyword_hits` palavras-chave da query original.
+
+    Esta filtragem pós-scrape resolve o problema de motores de pesquisa da
+    dark web devolverem resultados genéricos cujo conteúdo real não tem
+    relação com a query de investigação. Sem esta etapa, o LLM recebe
+    conteúdo irrelevante e produz sumários descontextualizados.
+
+    Se a filtragem remover TODOS os resultados, devolve o dict original
+    para evitar perder toda a análise (melhor ter algo genérico do que nada).
+
+    Parâmetros:
+        query (str): Query de pesquisa original do utilizador.
+        scraped (dict): Dicionário {url: texto_scrapeado}.
+        min_keyword_hits (int): Número mínimo de keywords da query que devem
+                                aparecer no conteúdo para ser considerado relevante.
+
+    Devolve:
+        dict: Subconjunto do dict original contendo apenas fontes relevantes.
+    """
+    # Extrai keywords da query (palavras com 3+ caracteres, lowercase)
+    keywords = [w.lower() for w in query.split() if len(w) >= 3]
+    if not keywords:
+        return scraped  # sem keywords úteis, não filtra
+
+    relevant = {}
+    for url, content in scraped.items():
+        content_lower = content.lower()
+        hits = sum(1 for kw in keywords if kw in content_lower)
+        if hits >= min_keyword_hits:
+            relevant[url] = content
+
+    # Se a filtragem removeu TUDO, devolve o original para não perder toda a análise
+    if relevant:
+        logging.info(
+            "Post-scrape relevance filter: %d/%d sources kept (query: %s)",
+            len(relevant), len(scraped), query[:60],
+        )
+    else:
+        logging.warning(
+            "Post-scrape relevance filter removed ALL %d sources — keeping originals (query: %s)",
+            len(scraped), query[:60],
+        )
+    return relevant if relevant else scraped
+
+
 def generate_summary(llm, query, content, preset="threat_intel", custom_instructions=""):
     """
     Gera uma análise técnica estruturada do conteúdo recolhido das páginas
