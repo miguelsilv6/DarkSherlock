@@ -261,77 +261,62 @@ def fetch_search_results(endpoint, query, session=None):
         return []
 
 
+_RE_ONION_DOMAIN = re.compile(r'https?://([a-z0-9.]+\.onion)')
+
+
 def get_search_results(refined_query, max_workers=5):
     """
     Orquestra a pesquisa concorrente em todos os motores de pesquisa activos.
 
-    Estratégia de concorrência:
-      - ThreadPoolExecutor lança até max_workers threads em simultâneo, cada
-        uma chamando fetch_search_results para um motor diferente.
-      - as_completed() processa os resultados à medida que cada thread termina
-        (em vez de esperar que todas terminem), reduzindo a latência percebida.
-      - O número de workers (padrão: 5) equilibra paralelismo e carga no
-        circuito Tor — demasiadas threads simultâneas podem saturar a largura
-        de banda disponível ou levantar suspeitas nos nós de entrada.
-
-    Deduplicação:
-      - Múltiplos motores de pesquisa indexam frequentemente os mesmos sites
-        .onion, pelo que é expectável obter URLs duplicados.
-      - A deduplicação usa um conjunto (set) de URLs normalizados (sem barra
-        final) como estrutura de lookup O(1).
-      - A normalização remove a barra final (rstrip('/')) para tratar
-        "http://exemplo.onion/" e "http://exemplo.onion" como o mesmo recurso.
+    Inclui deduplicação por URL e exclusão de meta-resultados (resultados
+    cujo domínio .onion pertence a um dos próprios motores de pesquisa).
 
     Argumentos:
         refined_query (str): query de pesquisa já refinada pelo LLM.
         max_workers (int): número máximo de threads concorrentes. Padrão: 5.
 
     Retorna:
-        list[dict]: lista deduplicada de resultados {"title": str, "link": str}.
+        list[dict]: lista deduplicada e filtrada de resultados.
     """
-    # Importação local para evitar importação circular — engine_manager importa
-    # de search.py, por isso search.py não pode importar engine_manager ao
-    # nível do módulo.
     from engine_manager import get_active_engine_urls
     active_urls = get_active_engine_urls()
 
+    # Extrair domínios .onion dos motores de pesquisa para excluir meta-resultados
+    engine_domains = set()
+    for url_template in active_urls:
+        m = _RE_ONION_DOMAIN.search(url_template)
+        if m:
+            engine_domains.add(m.group(1))
+
     results = []
 
-    # Cria UMA sessão Tor partilhada por todos os workers do pool.
-    # Sem esta optimização, fetch_search_results() criaria uma sessão nova
-    # para cada motor, resultando em N sessões e N handshakes Tor (~300-500 ms
-    # cada). Com uma sessão partilhada, o overhead ocorre apenas uma vez.
     shared_session = get_tor_session()
 
-    # Lançar todos os pedidos em paralelo usando um pool de threads.
-    # Cada future representa a execução assíncrona de fetch_search_results
-    # para um único motor de pesquisa, partilhando a mesma sessão Tor.
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(fetch_search_results, endpoint, refined_query, shared_session)
                    for endpoint in active_urls]
 
-        # Processar resultados à medida que cada thread conclui,
-        # independentemente da ordem de submissão.
         for future in as_completed(futures):
             result_urls = future.result()
             results.extend(result_urls)
 
-    # --- Deduplicação de resultados ---
-    # Usar um set para rastrear URLs já vistos com complexidade O(1) por lookup.
+    # Deduplicação + exclusão de meta-resultados (search engine pages)
     seen_links = set()
     unique_results = []
 
     for res in results:
         link = res.get("link")
-        # Normalizar o URL removendo barra final para evitar duplicados
-        # causados por inconsistência de formatação entre motores.
-        # Ex.: "http://abc.onion/page/" e "http://abc.onion/page" → mesmo recurso.
         clean_link = link.rstrip('/')
 
-        if clean_link not in seen_links:
-            # Primeiro avistamento deste URL — registar e incluir nos resultados.
-            seen_links.add(clean_link)
-            unique_results.append(res)
-        # Se já foi visto, descartar silenciosamente o duplicado.
+        if clean_link in seen_links:
+            continue
+
+        # Excluir resultados cujo domínio pertence a um motor de pesquisa
+        m = _RE_ONION_DOMAIN.search(link)
+        if m and m.group(1) in engine_domains:
+            continue
+
+        seen_links.add(clean_link)
+        unique_results.append(res)
 
     return unique_results

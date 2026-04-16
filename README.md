@@ -11,6 +11,7 @@
       <a href="#features">Features</a> &bull;
       <a href="#architecture">Architecture</a> &bull;
       <a href="#installation">Installation</a> &bull;
+      <a href="#portainer-docker">Portainer</a> &bull;
       <a href="#usage">Usage</a> &bull;
       <a href="#configuration">Configuration</a> &bull;
       <a href="#academic-context">Academic Context</a>
@@ -161,6 +162,183 @@ docker run --rm \
 >    -p 8501:8501 \
 >    darksherlock
 > ```
+
+---
+
+### Portainer (Docker)
+
+> **Nota:** O Tor corre **dentro** do container (incluído no `Dockerfile`). Não precisas de instalar Tor na máquina host.
+
+#### Pré-requisitos
+
+- [Portainer CE](https://docs.portainer.io/start/install-ce) instalado e acessível
+- Ollama a correr no host em `http://localhost:11434` (ou noutro endereço acessível via rede)
+- Git instalado no host (para clonar o repositório)
+
+---
+
+#### Método 1 — Stack (Recomendado)
+
+O método mais simples. Usa o editor de Stacks do Portainer para definir o container como código.
+
+**Passo 1 — Clonar o repositório no host Docker**
+
+```bash
+git clone https://github.com/miguelsilv6/DarkSherlock.git /opt/darksherlock
+cd /opt/darksherlock
+```
+
+**Passo 2 — Criar o ficheiro `.env`**
+
+```bash
+cp .env.example .env
+# Edita o .env com o endereço do Ollama (ver secção Configuration)
+nano .env
+```
+
+Conteúdo mínimo do `.env` para usar Ollama no host:
+
+```env
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+```
+
+**Passo 3 — Criar a Stack no Portainer**
+
+1. Abre o Portainer → **Stacks** → **+ Add stack**
+2. Dá um nome à stack, por exemplo `darksherlock`
+3. Seleciona **Web editor** e cola o seguinte `docker-compose.yml`:
+
+```yaml
+services:
+  darksherlock:
+    build:
+      context: /opt/darksherlock      # Caminho absoluto do repositório no host
+    container_name: darksherlock
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    volumes:
+      - /opt/darksherlock/.env:/app/.env                          # Variáveis de ambiente
+      - /opt/darksherlock/investigations:/app/investigations       # Investigações persistentes
+      - /opt/darksherlock/logs:/app/logs                          # Logs persistentes
+      - /opt/darksherlock/config:/app/config                      # Motores de pesquisa
+    extra_hosts:
+      - "host.docker.internal:host-gateway"    # Acesso ao Ollama no host
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s              # Tempo para o Tor arrancar
+```
+
+4. Clica em **Deploy the stack**
+5. Aguarda o build (2–5 minutos na primeira vez)
+
+**Passo 4 — Aceder à aplicação**
+
+Abre o browser em `http://<IP-DO-HOST>:8501`
+
+---
+
+#### Método 2 — Build Manual + Importar Imagem
+
+Útil quando o host Docker não tem acesso à internet ou ao repositório Git.
+
+**Passo 1 — Fazer build e exportar a imagem na máquina local**
+
+```bash
+git clone https://github.com/miguelsilv6/DarkSherlock.git
+cd DarkSherlock
+docker build -t darksherlock .
+docker save darksherlock | gzip > darksherlock.tar.gz
+```
+
+**Passo 2 — Importar a imagem no Portainer**
+
+1. Portainer → **Images** → **Import**
+2. Clica em **Upload** e seleciona o ficheiro `darksherlock.tar.gz`
+3. Aguarda o upload e a descompressão
+
+**Passo 3 — Criar o Container**
+
+1. Portainer → **Containers** → **+ Add container**
+2. Preenche os campos:
+
+| Campo | Valor |
+|-------|-------|
+| **Name** | `darksherlock` |
+| **Image** | `darksherlock:latest` |
+| **Port mapping** | Host `8501` → Container `8501` |
+| **Restart policy** | `Unless stopped` |
+
+3. Em **Volumes**, adiciona os seguintes bind mounts:
+
+| Host path | Container path |
+|-----------|---------------|
+| `/opt/darksherlock/.env` | `/app/.env` |
+| `/opt/darksherlock/investigations` | `/app/investigations` |
+| `/opt/darksherlock/logs` | `/app/logs` |
+| `/opt/darksherlock/config` | `/app/config` |
+
+4. Em **Network** → **Extra hosts**, adiciona:
+   ```
+   host.docker.internal:host-gateway
+   ```
+
+5. Clica em **Deploy the container**
+
+---
+
+#### Verificar o Estado do Container
+
+No Portainer, abre o container `darksherlock` → **Logs** para verificar o arranque:
+
+```
+Starting Tor...
+Waiting for Tor socket...
+Tor is ready.
+Starting Robin: AI-Powered Dark Web OSINT Tool...
+```
+
+Se o Tor demorar mais de 60 segundos a arrancar, o container termina com erro. Nesse caso, verifica a conectividade da rede do host Docker.
+
+---
+
+#### Configurar o Ollama com Portainer
+
+Se o Ollama estiver a correr **no mesmo host** que o Portainer:
+
+```env
+# No ficheiro .env
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+```
+
+Garante que o Ollama aceita ligações externas:
+
+```bash
+OLLAMA_HOST=0.0.0.0 ollama serve
+```
+
+Se o Ollama estiver noutro servidor da rede:
+
+```env
+OLLAMA_BASE_URL=http://192.168.1.100:11434
+```
+
+---
+
+#### Atualizar para uma Nova Versão
+
+**Via Stack:**
+```bash
+cd /opt/darksherlock
+git pull origin main
+```
+Portainer → **Stacks** → `darksherlock` → **Editor** → **Update the stack**
+
+**Via imagem manual:**
+Repete o Método 2 com a nova imagem e recria o container.
 
 ---
 
