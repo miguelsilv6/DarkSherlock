@@ -351,7 +351,7 @@ st.subheader("Reset")
 confirm_reset = st.checkbox("Confirmo que quero repor os engines originais", key="confirm_reset")
 
 if st.button("Repor Defaults", disabled=not confirm_reset, type="secondary"):
-    # Repõe a lista de engines para os 16 engines originais definidos no código
+    # Repõe a lista de engines para os valores builtin definidos em search.py
     reset_to_defaults()
 
     # Invalida o cache de saúde para que o auto-check seja executado novamente

@@ -146,6 +146,14 @@ adicionais** do repositorio [fastfire/deepdarkCTI](https://github.com/fastfire/d
 que mantem uma lista actualizada de recursos .onion verificados como ONLINE.
 Estes engines vem **desactivados por omissao** — activa-os individualmente e testa com
 "Test All Engines" antes de usar no pipeline.
+
+**DarkForums (MyBB):** O projecto inclui um motor opcional para pesquisa por keywords no
+forum DarkForums (URL MyBB `search.php?action=results&keywords={query}`). Esta engine vem
+**desactivada por omissao** — o endereco .onion pode mudar, e o acesso deve limitar-se a
+**uso legal e autorizado**. Depois de activar, usa "Test All Engines" para confirmar
+conectividade via Tor. Os links relativos dos resultados (ex.: `showthread.php`) sao
+resolvidos automaticamente; threads no mesmo dominio .onion **nao** sao descartados como
+"meta-resultados" (comportamento distinto dos motores tipo Ahmia).
 """)
 
 st.subheader("Debug & Logs")

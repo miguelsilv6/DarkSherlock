@@ -24,6 +24,7 @@ import requests
 import random, re
 import json
 import os
+from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
@@ -82,6 +83,19 @@ SEARCH_ENGINES = [
     {"name": "OSS",             "url": "http://3fzh7yuupdfyjhwt3ugzqqof6ulbcl27ecev33knxe3u7goi3vfn2qqd.onion/oss/index.php?search={query}"},
     {"name": "Torgol",          "url": "http://torgolnpeouim56dykfob6jh5r2ps2j73enc42s2um4ufob3ny4fcdyd.onion/?q={query}"},
     {"name": "The Deep Searches","url": "http://searchgf7gdtauh7bhnbyed4ivxqmuoat3nm6zfrg3ymkq6mtnpye3ad.onion/search?q={query}"},
+
+    # ---------------------------------------------------------------------------
+    # Fóruns MyBB — pesquisa interna (threads no mesmo .onion são resultados válidos)
+    # ---------------------------------------------------------------------------
+    {
+        "name": "DarkForums",
+        "url": (
+            "http://darkfoxaqhfpxkrbt7vxns2z2u2k72sgmqbzeorupaiottw3ecm2wgyd.onion/"
+            "search.php?action=results&keywords={query}"
+        ),
+        "default_enabled": False,
+        "keep_same_domain_results": True,
+    },
 
     # ---------------------------------------------------------------------------
     # Motores adicionais — fonte: fastfire/deepdarkCTI (desactivados por omissão)
@@ -220,6 +234,9 @@ def fetch_search_results(endpoint, query, session=None):
             # comum em serviços .onion que não seguem standards rigorosamente.
             soup = BeautifulSoup(response.text, "html.parser")
             links = []
+            # URL final após redirecionamentos — necessário para resolver hrefs
+            # relativos (ex.: MyBB showthread.php?tid=… nos resultados do DarkForums).
+            page_base = response.url
 
             # Iterar sobre todas as âncoras da página.
             # A abordagem genérica (sem selectores específicos por motor)
@@ -227,13 +244,20 @@ def fetch_search_results(endpoint, query, session=None):
             # que tipicamente listam resultados como <a href="url.onion">título</a>.
             for a in soup.find_all('a'):
                 try:
-                    href = a['href']
+                    href = a.get('href')
+                    if not href or href.startswith('#'):
+                        continue
+                    if href.strip().lower().startswith('javascript:'):
+                        continue
+                    resolved = urljoin(page_base, href.strip())
                     title = a.get_text(strip=True)
 
                     # Expressão regular para extrair URLs .onion completos,
                     # incluindo path e query string se presentes.
                     # O padrão [a-z0-9\.]+ cobre o hash v2/v3 do endereço .onion.
-                    link = re.findall(r'https?:\/\/[a-z0-9\.]+\.onion.*', href)
+                    link = re.findall(
+                        r'https?:\/\/[a-z0-9\.]+\.onion[^\s\"\'<>]*', resolved
+                    )
 
                     if len(link) != 0:
                         # Filtro de qualidade duplo:
@@ -271,6 +295,9 @@ def get_search_results(refined_query, max_workers=5):
     Inclui deduplicação por URL e exclusão de meta-resultados (resultados
     cujo domínio .onion pertence a um dos próprios motores de pesquisa).
 
+    Motores com ``keep_same_domain_results`` (ex.: fóruns MyBB) não activam
+    esta exclusão — os links de threads no mesmo host são mantidos.
+
     Argumentos:
         refined_query (str): query de pesquisa já refinada pelo LLM.
         max_workers (int): número máximo de threads concorrentes. Padrão: 5.
@@ -278,13 +305,20 @@ def get_search_results(refined_query, max_workers=5):
     Retorna:
         list[dict]: lista deduplicada e filtrada de resultados.
     """
-    from engine_manager import get_active_engine_urls
-    active_urls = get_active_engine_urls()
+    from engine_manager import load_engines
 
-    # Extrair domínios .onion dos motores de pesquisa para excluir meta-resultados
+    active_engines = [
+        e for e in load_engines() if e.get("enabled", True)
+    ]
+    active_urls = [e["url"] for e in active_engines]
+
+    # Domínios dos motores onde queremos filtrar links para o próprio host
+    # (evitar listar a UI do motor). Fóruns definem keep_same_domain_results.
     engine_domains = set()
-    for url_template in active_urls:
-        m = _RE_ONION_DOMAIN.search(url_template)
+    for e in active_engines:
+        if e.get("keep_same_domain_results"):
+            continue
+        m = _RE_ONION_DOMAIN.search(e["url"])
         if m:
             engine_domains.add(m.group(1))
 
@@ -311,7 +345,8 @@ def get_search_results(refined_query, max_workers=5):
         if clean_link in seen_links:
             continue
 
-        # Excluir resultados cujo domínio pertence a um motor de pesquisa
+        # Excluir resultados cujo domínio pertence a um motor "genérico"
+        # (não aplicável a fóruns com keep_same_domain_results).
         m = _RE_ONION_DOMAIN.search(link)
         if m and m.group(1) in engine_domains:
             continue

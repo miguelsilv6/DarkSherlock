@@ -23,6 +23,7 @@ def _seed_engines() -> List[Dict]:
             "url": e["url"],
             "enabled": e.get("default_enabled", True),
             "is_default": True,
+            "keep_same_domain_results": e.get("keep_same_domain_results", False),
         }
         for e in _BUILTIN_ENGINES
     ]
@@ -63,6 +64,9 @@ def load_engines() -> List[Dict]:
                 "url": builtin["url"],
                 "enabled": builtin.get("default_enabled", True),
                 "is_default": True,
+                "keep_same_domain_results": builtin.get(
+                    "keep_same_domain_results", False
+                ),
             })
             new_engines_added = True
 
