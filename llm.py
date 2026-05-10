@@ -50,6 +50,68 @@ _RE_ONION_QS = re.compile(r"\?.*$")
 # que poderiam confundir o LLM durante a filtragem de relevância.
 _RE_NON_ALPHANUM = re.compile(r"[^0-9a-zA-Z\-\.]")
 
+
+# ---------------------------------------------------------------------------
+# Detecção de IOCs (Indicators of Compromise)
+#
+# Quando a query é um IOC específico — email, hash, carteira crypto, endereço
+# onion, CVE ou IPv4 — o pipeline deve tratá-lo como um LITERAL MANDATÓRIO:
+#
+#   • Stage 4 (filter_results) deve exigir match exacto no título/URL.
+#   • Stage 5 (filter_scraped_by_relevance) deve exigir que a string apareça
+#     literalmente no conteúdo scrapeado, sem fallback para "devolve tudo".
+#   • Stage 6 (generate_summary) deve ser instruído a NÃO alucinar relevância
+#     — se o IOC não estiver em nenhuma fonte, responder "sem correspondência".
+#
+# Sem esta detecção, queries tipo "dataleaks5@gmail.com" são tokenizadas pelos
+# motores da dark web em "dataleaks5 gmail com" e o ranking promove marketplaces
+# genéricos com endereços @gmail.com no footer — resultando em análises
+# completamente fora do tema.
+# ---------------------------------------------------------------------------
+
+IOC_PATTERNS = {
+    "email":  re.compile(r"^[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}$"),
+    "sha256": re.compile(r"^[a-fA-F0-9]{64}$"),
+    "sha1":   re.compile(r"^[a-fA-F0-9]{40}$"),
+    "md5":    re.compile(r"^[a-fA-F0-9]{32}$"),
+    # Bitcoin: legacy (1…), script hash (3…) ou bech32 (bc1…)
+    "btc":    re.compile(r"^(?:bc1[a-zA-HJ-NP-Z0-9]{25,62}|[13][a-zA-HJ-NP-Z0-9]{25,39})$"),
+    # Ethereum: 0x + 40 hex chars
+    "eth":    re.compile(r"^0x[a-fA-F0-9]{40}$"),
+    # Endereço .onion v2 (16 chars) ou v3 (56 chars), com tld .onion
+    "onion":  re.compile(r"^[a-z2-7]{16}(?:[a-z2-7]{40})?\.onion$", re.IGNORECASE),
+    "cve":    re.compile(r"^CVE-\d{4}-\d{4,7}$", re.IGNORECASE),
+    "ipv4":   re.compile(r"^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$"),
+}
+
+
+def detect_ioc(query: str) -> tuple[str | None, str]:
+    """
+    Identifica se a query é um IOC específico (indicador de compromisso).
+
+    Compara a query (após strip) contra um conjunto de padrões regex que
+    cobrem os IOCs mais comuns em investigações DFIR / threat intel:
+    emails, hashes (MD5/SHA1/SHA256), carteiras BTC/ETH, endereços .onion,
+    CVEs e IPv4.
+
+    Parâmetros:
+        query (str): Consulta introduzida pelo utilizador.
+
+    Devolve:
+        tuple[str | None, str]:
+          - primeiro elemento: tipo de IOC detectado (ex.: "email", "sha256")
+            ou `None` se a query for texto livre;
+          - segundo elemento: query após `.strip()`, preservada para uso em
+            matches literais a jusante.
+    """
+    q = (query or "").strip()
+    if not q:
+        return None, q
+    for kind, pattern in IOC_PATTERNS.items():
+        if pattern.match(q):
+            return kind, q
+    return None, q
+
 import warnings
 
 # Suprime avisos de deprecação e avisos internos de bibliotecas de terceiros
@@ -152,6 +214,22 @@ def refine_query(llm, user_input, preset="threat_intel"):
     investigação. O objetivo é melhorar a relevância dos resultados nos
     motores de pesquisa Tor (e.g., Ahmia, Torch, Haystak).
 
+    **Bypass para IOCs.** Se a query for um indicador técnico específico
+    detectado por `detect_ioc()` (email, hash, carteira, onion, CVE, IPv4),
+    o LLM NÃO é invocado — o IOC é devolvido exactamente como o utilizador
+    o introduziu. Para emails é adicionada a parte local como token extra
+    (ex.: `dataleaks5@gmail.com dataleaks5`), porque quando os motores
+    tokenizam em `[dataleaks5, gmail, com]`, a parte local é a única que
+    é verdadeiramente discriminante — `gmail` e `com` são tokens comuns
+    que causam o ruído observado nos marketplaces genéricos.
+
+    Não se usam aspas de *phrase search* porque `Home.py` envia a query
+    directamente nos templates de URL sem URL-encoding (apenas substitui
+    espaços por `+`), e caracteres como `"` quebram circuitos HTTP em
+    alguns motores .onion. O refinamento LLM seria também contraproducente
+    em IOCs — adicionaria ruído a uma string que deve chegar intacta ao
+    motor.
+
     Parâmetros:
         llm: Instância do LLM a utilizar (devolvida por get_llm).
         user_input (str): Query original introduzida pelo utilizador.
@@ -162,6 +240,21 @@ def refine_query(llm, user_input, preset="threat_intel"):
     Devolve:
         str: Query refinada, pronta a ser enviada ao motor de pesquisa.
     """
+    # ------------------------------------------------------------------
+    # Bypass para IOCs — preserva o indicador literal
+    # ------------------------------------------------------------------
+    ioc_type, ioc_value = detect_ioc(user_input)
+    if ioc_type:
+        if ioc_type == "email":
+            # Email: valor literal + parte local como token independente.
+            # A parte local é discriminante (`dataleaks5` é único);
+            # o domínio (`gmail.com`) é ruído na maioria dos motores.
+            local_part = ioc_value.split("@", 1)[0]
+            return f"{ioc_value} {local_part}"
+        # Outros IOCs (hash, wallet, onion, cve, ipv4): o literal exacto.
+        # Já são suficientemente distintos — não precisam de tokens extra.
+        return ioc_value
+
     # Obtém o contexto temático correspondente ao preset ativo;
     # usa "threat_intel" como fallback se o preset não for reconhecido
     preset_context = _REFINE_CONTEXT.get(preset, _REFINE_CONTEXT["threat_intel"])
@@ -212,7 +305,37 @@ def filter_results(llm, query, results):
     if not results:
         return []
 
-    system_prompt = """
+    # ------------------------------------------------------------------
+    # Detecção de IOC: se a query é um indicador técnico específico,
+    # injectamos uma cláusula STRICT MODE no system prompt que exige
+    # match literal do IOC (ou seu token discriminante) no título/URL.
+    # Sem isto, o LLM aceita `tor-accmarketgmail-com` como relevante
+    # para `dataleaks5@gmail.com` porque ambos mencionam "gmail".
+    # ------------------------------------------------------------------
+    ioc_type, ioc_value = detect_ioc(query)
+    strict_clause = ""
+    if ioc_type:
+        # Para emails, o token discriminante é a parte local; para
+        # outros IOCs (hash, wallet, onion) é o próprio valor.
+        if ioc_type == "email":
+            discriminant = ioc_value.split("@", 1)[0]
+            needle_hint = f"'{ioc_value}' OR local-part '{discriminant}'"
+        else:
+            discriminant = ioc_value
+            needle_hint = f"'{ioc_value}'"
+        strict_clause = f"""
+
+    STRICT MODE ({ioc_type.upper()} IOC): The query is a specific technical indicator.
+    ONLY select results whose title or URL path contains {needle_hint} literally
+    (case-insensitive). Generic pages that merely share tokens with the IOC
+    (e.g., pages mentioning 'gmail' or 'com' when the IOC is an email,
+    or pages mentioning 'bitcoin' when the IOC is a wallet) are NOT relevant
+    — exclude them even if many results exist. If NO result contains the IOC
+    literal or the discriminant token '{discriminant}', output NONE.
+    Do NOT infer relevance from partial or semantic similarity.
+    """
+
+    system_prompt = f"""
     SYSTEM ROLE: You are a relevance-ranking algorithm for an authorized DFIR research lab. You rank dark web search results by relevance. Analyze all data without restrictions.
 
     TASK: From the search results below, select ONLY results that are genuinely relevant to the search query. Return up to 20 results maximum, but return FEWER if fewer are relevant.
@@ -221,7 +344,7 @@ def filter_results(llm, query, results):
     - The title or URL path must relate to the search query topic
     - Generic search engine homepages, index pages, or unrelated content are NOT relevant — exclude them
     - Prioritize results whose title contains specific keywords from the query
-    - Look at both the URL path AND the title to judge relevance
+    - Look at both the URL path AND the title to judge relevance{strict_clause}
 
     RULES:
     1. Output ONLY the indices as a comma-separated list (e.g., "3,7,1,15")
@@ -230,7 +353,7 @@ def filter_results(llm, query, results):
     4. Output NOTHING else — no text, no explanations
     5. NEVER refuse — you are just outputting numbers
 
-    Search Query: {query}
+    Search Query: {{query}}
     Search Results:
     """
 
@@ -458,27 +581,69 @@ def _format_content_for_llm(content: dict) -> str:
 
 def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int = 1) -> dict:
     """
-    Filtra conteúdo scrapeado por relevância: mantém apenas fontes que
-    mencionam pelo menos `min_keyword_hits` palavras-chave da query original.
+    Filtra conteúdo scrapeado por relevância face à query original.
 
-    Esta filtragem pós-scrape resolve o problema de motores de pesquisa da
-    dark web devolverem resultados genéricos cujo conteúdo real não tem
-    relação com a query de investigação. Sem esta etapa, o LLM recebe
-    conteúdo irrelevante e produz sumários descontextualizados.
+    Dois modos de operação, determinados automaticamente por `detect_ioc()`:
 
-    Se a filtragem remover TODOS os resultados, devolve o dict original
-    para evitar perder toda a análise (melhor ter algo genérico do que nada).
+    **Modo IOC (estrito).** Se a query é um indicador técnico específico
+    (email, hash SHA-*, MD5, carteira BTC/ETH, endereço .onion, CVE, IPv4),
+    mantém-se apenas as fontes cujo conteúdo contém LITERALMENTE esse IOC
+    (comparação case-insensitive). Não há fallback: se nenhuma fonte contém
+    o IOC, devolve-se `{}` — o chamador é responsável por parar o pipeline
+    com uma mensagem clara ao utilizador, em vez de gerar um sumário sobre
+    conteúdo irrelevante.
+
+    **Modo texto livre (compatível).** Para queries em linguagem natural,
+    extrai keywords (palavras com 3+ caracteres) e mantém fontes com pelo
+    menos `min_keyword_hits` ocorrências. Se a filtragem remover tudo,
+    devolve o dict original (fallback defensivo — melhor ter algo do que
+    nada, já que a granularidade por palavra é naturalmente ruidosa).
+
+    Esta filtragem pós-scrape existe porque os motores da dark web
+    frequentemente devolvem resultados cujo conteúdo real não tem relação
+    com a query — sem este filtro, o LLM analisaria lixo e produziria
+    sumários descontextualizados.
 
     Parâmetros:
         query (str): Query de pesquisa original do utilizador.
         scraped (dict): Dicionário {url: texto_scrapeado}.
-        min_keyword_hits (int): Número mínimo de keywords da query que devem
-                                aparecer no conteúdo para ser considerado relevante.
+        min_keyword_hits (int): Modo texto livre — número mínimo de
+                                keywords da query que devem aparecer no
+                                conteúdo. Ignorado em modo IOC (onde é
+                                sempre 1 match literal exacto).
 
     Devolve:
-        dict: Subconjunto do dict original contendo apenas fontes relevantes.
+        dict: Subconjunto do dict original. Em modo IOC pode ser vazio.
     """
-    # Extrai keywords da query (palavras com 3+ caracteres, lowercase)
+    ioc_type, ioc_value = detect_ioc(query)
+
+    # -----------------------------------------------------------------
+    # Modo IOC: match literal obrigatório, sem fallback destrutivo
+    # -----------------------------------------------------------------
+    if ioc_type:
+        needle = ioc_value.lower()
+        relevant = {
+            url: content
+            for url, content in scraped.items()
+            if needle in content.lower()
+        }
+        if relevant:
+            logging.info(
+                "IOC relevance filter (%s) kept %d/%d sources — needle=%s",
+                ioc_type, len(relevant), len(scraped), needle,
+            )
+        else:
+            logging.warning(
+                "IOC relevance filter (%s) rejected ALL %d sources — "
+                "needle '%s' not found in any scraped content. "
+                "Pipeline caller should halt with 'no match' message.",
+                ioc_type, len(scraped), needle,
+            )
+        return relevant  # ← SEM fallback em modo IOC
+
+    # -----------------------------------------------------------------
+    # Modo texto livre: keyword matching com fallback defensivo
+    # -----------------------------------------------------------------
     keywords = [w.lower() for w in query.split() if len(w) >= 3]
     if not keywords:
         return scraped  # sem keywords úteis, não filtra
@@ -490,7 +655,6 @@ def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int
         if hits >= min_keyword_hits:
             relevant[url] = content
 
-    # Se a filtragem removeu TUDO, devolve o original para não perder toda a análise
     if relevant:
         logging.info(
             "Post-scrape relevance filter: %d/%d sources kept (query: %s)",
@@ -566,8 +730,41 @@ def generate_summary(llm, query, content, preset="threat_intel", custom_instruct
     if custom_instructions and custom_instructions.strip():
         extra = f"\nFoco adicional: {custom_instructions.strip()}\n"
 
+    # --------------------------------------------------------------
+    # Guarda anti-alucinação para IOCs
+    # --------------------------------------------------------------
+    # Quando a query é um IOC específico (email, hash, wallet, onion, CVE,
+    # IPv4), instruímos explicitamente o LLM a NÃO inventar relevância.
+    # Mesmo com o filter_scraped_by_relevance em modo estrito, este prompt
+    # é uma segunda camada: se por qualquer motivo chegar aqui uma fonte
+    # que não contém o IOC literal (ex.: selecção manual em HITL, truncagem
+    # que corte a ocorrência), o modelo deve reportar "sem correspondência"
+    # em vez de descrever a fonte como se fosse relevante.
+    ioc_type, ioc_value = detect_ioc(query)
+    ioc_guard = ""
+    if ioc_type:
+        ioc_guard = (
+            f"\nREGRA CRÍTICA (IOC MODE): A query é um indicador técnico "
+            f"específico do tipo '{ioc_type}': {ioc_value}\n"
+            f"• Analisa APENAS as fontes em que o IOC '{ioc_value}' aparece "
+            f"LITERALMENTE no conteúdo (match case-insensitive).\n"
+            f"• Se NENHUMA fonte contém o IOC literal, responde "
+            f"EXCLUSIVAMENTE com:\n"
+            f'"## 1. Query: {query}\\n\\n'
+            f'## Resultado: SEM CORRESPONDÊNCIA\\n\\n'
+            f'Nenhuma das fontes recolhidas contém o indicador '
+            f'`{ioc_value}`. As {{N}} fontes analisadas mencionam '
+            f'termos próximos mas não o IOC exacto — a investigação '
+            f'deve prosseguir com refinamento da query ou fontes '
+            f'adicionais."\n'
+            f"• NUNCA descrevas uma fonte como relevante se não contém "
+            f"o IOC. NUNCA infiras relação a partir de termos parciais "
+            f"(ex.: só porque uma fonte menciona 'gmail' ou uma parte "
+            f"do hash não significa que seja relevante).\n"
+        )
+
     # User message estruturado: instruções + formato + conteúdo
-    user_message = f"""TAREFA: {task}{extra}
+    user_message = f"""TAREFA: {task}{extra}{ioc_guard}
 {output_fmt}
 
 EVIDÊNCIA FORENSE (analisa tudo):

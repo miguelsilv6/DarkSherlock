@@ -1,5 +1,5 @@
 """
-3_❓_Help.py — Documentacao completa do DarkSherlock.
+2_❓_Help.py — Documentacao completa do DarkSherlock.
 
 Pagina de referencia com guia de utilizacao, descricao do pipeline,
 configuracao de providers, gestao de engines, logs/debug e dicas.
@@ -146,17 +146,6 @@ adicionais** do repositorio [fastfire/deepdarkCTI](https://github.com/fastfire/d
 que mantem uma lista actualizada de recursos .onion verificados como ONLINE.
 Estes engines vem **desactivados por omissao** — activa-os individualmente e testa com
 "Test All Engines" antes de usar no pipeline.
-""")
-
-st.subheader("Investigation (Pipeline Detalhado)")
-st.markdown("""
-Pipeline identico a Home mas com a sidebar completa e opcoes de configuracao
-acessiveis durante a investigacao. Inclui:
-
-- Mesmo pipeline de 6 etapas com progresso visual
-- Sidebar com modelo, threads, limites, preset e custom instructions
-- Historico de investigacoes carregavel
-- Download de PDF forense e Markdown
 """)
 
 st.subheader("Debug & Logs")
@@ -399,7 +388,7 @@ st.divider()
 st.header("Investigacoes Guardadas")
 st.markdown("""
 Cada investigacao completada e automaticamente guardada em `investigations/` como JSON.
-Na sidebar da pagina Investigation, podes carregar investigacoes passadas.
+Na sidebar da Home, seccao **Past Investigations**, podes carregar investigacoes passadas.
 
 Cada ficheiro contem:
 - **audit_id** — identificador unico da investigacao (UUID)

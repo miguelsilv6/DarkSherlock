@@ -34,10 +34,17 @@ from pathlib import Path
 from scrape import scrape_multiple
 from search import get_search_results
 from llm_utils import BufferedStreamingHandler, get_model_choices
-from llm import get_llm, refine_query, filter_results, generate_summary, filter_scraped_by_relevance, PRESET_PROMPTS
+from llm import get_llm, refine_query, filter_results, generate_summary, filter_scraped_by_relevance, detect_ioc, PRESET_PROMPTS
 from engine_manager import get_active_engines
 from report import compute_integrity_hashes, generate_forensic_pdf
 from audit import log_investigation, setup_file_logging
+from hitl import (
+    render_stage2_review,
+    render_stage4_review,
+    render_stage5_review,
+    _reset_hitl_state,
+)
+from theme import apply_theme, render_metrics, render_brand_lockup
 
 # Configura o logging para ficheiro (captura debug/info de todos os módulos)
 setup_file_logging()
@@ -265,134 +272,34 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# CSS futurista — tema cyber/terminal para o DarkSherlock.
-# Injeta estilos globais para tipografia monoespaçada, glow no input de pesquisa,
-# botões com estilo neon, pills de preset com highlight, e containers do pipeline.
-st.markdown(
-    """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');
-
-    html, body, [class*="css"] {
-        font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace !important;
-    }
-
-    h1 {
-        font-size: 1.55rem !important;
-        font-weight: 700 !important;
-        letter-spacing: 0.12em !important;
-        text-transform: uppercase !important;
-        color: #00ff9f !important;
-        border-bottom: 1px solid #00ff9f33 !important;
-        padding-bottom: 0.4rem !important;
-        margin-bottom: 1.4rem !important;
-    }
-    h2, h3 { letter-spacing: 0.06em; color: #a0f0c8; }
-
-    /* Input de pesquisa com glow neon */
-    input[type="text"] {
-        background-color: #0d0d14 !important;
-        border: 1px solid #00ff9f55 !important;
-        border-radius: 4px !important;
-        color: #e2e8f0 !important;
-        caret-color: #00ff9f !important;
-        transition: border-color 0.25s ease, box-shadow 0.25s ease !important;
-        font-family: inherit !important;
-    }
-    input[type="text"]:focus {
-        border-color: #00ff9f !important;
-        box-shadow: 0 0 0 1px #00ff9f, 0 0 14px #00ff9f55 !important;
-        outline: none !important;
-    }
-
-    /* Botão primário (Run / form submit) */
-    button[kind="primaryFormSubmit"],
-    button[data-testid="baseButton-primary"],
-    .stButton > button[kind="primary"] {
-        background-color: #00ff9f14 !important;
-        color: #00ff9f !important;
-        border: 1px solid #00ff9f !important;
-        border-radius: 4px !important;
-        font-weight: 600 !important;
-        transition: background-color 0.2s ease, box-shadow 0.2s ease !important;
-    }
-    button[kind="primaryFormSubmit"]:hover,
-    button[data-testid="baseButton-primary"]:hover,
-    .stButton > button[kind="primary"]:hover {
-        background-color: #00ff9f2a !important;
-        box-shadow: 0 0 10px #00ff9f55 !important;
-    }
-
-    /* Botões secundários (download, load, etc.) */
-    .stButton > button, .stDownloadButton > button {
-        background-color: transparent !important;
-        color: #a0f0c8 !important;
-        border: 1px solid #a0f0c833 !important;
-        border-radius: 4px !important;
-        transition: border-color 0.2s ease !important;
-    }
-    .stButton > button:hover, .stDownloadButton > button:hover {
-        border-color: #00ff9f !important;
-        color: #00ff9f !important;
-    }
-
-    /* Containers das etapas do pipeline e expanders */
-    [data-testid="stStatusWidget"], div[data-testid="stExpander"] {
-        border: 1px solid #00ff9f22 !important;
-        border-radius: 6px !important;
-        background-color: #0d0d18 !important;
-    }
-
-    /* Pills do selector de preset */
-    div[data-testid="stPillsButton"] button {
-        background-color: #0d0d18 !important;
-        border: 1px solid #00ff9f33 !important;
-        color: #7a9e8e !important;
-        border-radius: 4px !important;
-        font-weight: 500 !important;
-        letter-spacing: 0.04em !important;
-        transition: all 0.2s ease !important;
-    }
-    div[data-testid="stPillsButton"] button[aria-checked="true"] {
-        background-color: #00ff9f18 !important;
-        border-color: #00ff9f !important;
-        color: #00ff9f !important;
-        box-shadow: 0 0 8px #00ff9f44 !important;
-    }
-    div[data-testid="stPillsButton"] button:hover {
-        border-color: #00ff9f88 !important;
-        color: #c0ffe0 !important;
-    }
-
-    /* Sidebar com borda neon subtil */
-    [data-testid="stSidebar"] { border-right: 1px solid #00ff9f1a !important; }
-
-    /* Alertas com borda esquerda colorida */
-    [data-testid="stAlertContainer"][kind="success"] {
-        border-left: 3px solid #00ff9f !important;
-        background-color: #00ff9f0d !important;
-    }
-    [data-testid="stAlertContainer"][kind="warning"] { border-left: 3px solid #ffcc00 !important; }
-    [data-testid="stAlertContainer"][kind="error"]   { border-left: 3px solid #ff4444 !important; }
-
-    /* Hiperligação de download legacy */
-    .aStyle {
-        font-size: 18px; font-weight: bold;
-        padding: 5px; padding-left: 0px;
-        text-align: left; color: #00ff9f;
-    }
-    </style>""",
-    unsafe_allow_html=True,
-)
+# DarkSherlock Design System — tokens, chrome CSS e componentes custom.
+# `apply_theme()` injecta o :root de variáveis CSS e as overrides de Streamlit
+# (botões, pills, expanders, status, alertas). Ver `theme.py` para detalhe.
+apply_theme()
 
 
 # ---------------------------------------------------------------------------
 # Barra lateral — apenas investigações anteriores
-# (configurações movidas para pages/5_🛠️_Settings.py)
+# (configurações movidas para pages/4_🛠️_Settings.py)
 # ---------------------------------------------------------------------------
 
 st.sidebar.title("DarkSherlock")
 st.sidebar.text("AI-Powered Dark Web OSINT Tool")
+
+# Toggle Human-in-the-Loop (HITL) — opt-in, default False
+# Quando activo, o pipeline pausa em 3 checkpoints (Stage 2, 4, 5) permitindo
+# ao analista rever/editar outputs intermédios antes de alimentar as etapas
+# seguintes. O estado vive em st.session_state["hitl_mode"].
+st.sidebar.toggle(
+    "🤝 Human-in-the-Loop",
+    key="hitl_mode",
+    help=(
+        "Pausa o pipeline para revisão humana após:\n"
+        "• Query refinada (Stage 2)\n"
+        "• URLs filtrados (Stage 4)\n"
+        "• Conteúdo scrapeado (Stage 5)"
+    ),
+)
 
 st.sidebar.divider()
 st.sidebar.subheader("Past Investigations")
@@ -411,6 +318,7 @@ if saved_investigations:
         if st.sidebar.button("Load", use_container_width=True, key="load_inv_btn"):
             st.session_state["loaded_investigation"] = saved_investigations[selected_inv_idx]
             st.session_state.pop("pipeline_complete", None)
+            st.session_state.pop("pipeline_no_match", None)
             st.rerun()
 else:
     st.sidebar.caption("No saved investigations yet.")
@@ -422,7 +330,7 @@ _preset_options = {
     "Dark Web Threat Intel":             "threat_intel",
     "Ransomware / Malware Focus":        "ransomware_malware",
     "Personal / Identity Investigation": "personal_identity",
-    "Corporate Espionage / Data Leaks":  "corporate_espionage",
+    "Corporate Spy / Data Leaks":  "corporate_espionage",
 }
 _model_options = get_model_choices()
 model               = st.session_state.get("model_select",       _model_options[0] if _model_options else None)
@@ -435,8 +343,13 @@ custom_instructions = st.session_state.get("custom_instructions", "")
 
 
 # ---------------------------------------------------------------------------
-# Área principal — Logótipo e formulário de pesquisa
+# Área principal — Brand lockup e formulário de pesquisa
 # ---------------------------------------------------------------------------
+# O brand lockup canónico (glifo SVG "forensic-magnifier-meets-terminal" +
+# wordmark Dark/Sherlock com caret a piscar + tagline "AI · DARK WEB · OSINT")
+# é renderizado via helper do theme.py. Tradução directa de
+# preview/brand-logo.html do DarkSherlock Design System.
+render_brand_lockup()
 
 # ---------------------------------------------------------------------------
 # Verificação automática dos motores na primeira execução
@@ -500,7 +413,7 @@ _PRESET_LABELS = [
     "Dark Web Threat Intel",
     "Ransomware / Malware Focus",
     "Personal / Identity Investigation",
-    "Corporate Espionage / Data Leaks",
+    "Corporate Spy / Data Leaks",
 ]
 _PRESET_ICONS = ["🌐", "🦠", "🪪", "🏢"]
 _PRESET_PILLS = [f"{icon}  {label}" for icon, label in zip(_PRESET_ICONS, _PRESET_LABELS)]
@@ -636,38 +549,70 @@ if "loaded_investigation" in st.session_state and not run_button:
 
 
 # ---------------------------------------------------------------------------
-# Pipeline principal de investigação (6 etapas)
+# Pipeline principal de investigação (6 etapas) — com suporte Human-in-the-Loop
 # ---------------------------------------------------------------------------
+#
+# O pipeline corre como uma máquina de estados cujos outputs intermédios vivem
+# em `st.session_state`. Quando o modo HITL está ligado, entre etapas críticas
+# há um "checkpoint" que pausa a execução via `st.stop()` e renderiza uma UI
+# de revisão — o próximo rerun retoma exactamente onde parou porque os outputs
+# anteriores já estão em session_state (idempotência) e as funções
+# `@st.cache_data` evitam repetir chamadas caras.
+#
+# Checkpoints activos quando `hitl_mode=True`:
+#   • Stage 2 → 3: revisão / edição da query refinada
+#   • Stage 4 → 5: selecção dos URLs a scrapear (antes do Tor)
+#   • Stage 5 → 6: selecção das fontes scrapeadas (antes do LLM gerar sumário)
+#
+# Quando `hitl_mode=False` o pipeline corre as 6 etapas de uma só vez, como
+# antes (compatibilidade total com o comportamento autónomo).
 
-# O pipeline só é executado quando o utilizador submete o formulário com
-# uma consulta não vazia. A verificação de `query` evita execuções acidentais
-# se o utilizador clicar em "Run" com o campo vazio.
+# ---------- Arranque de uma nova pesquisa ----------
+# Ao submeter o formulário, limpa estado residual e marca pipeline em curso.
 if run_button and query:
-
-    # Limpa qualquer investigação carregada e os dados residuais de um
-    # pipeline anterior para garantir um estado limpo antes de começar.
-    # Sem esta limpeza, dados de uma pesquisa anterior poderiam contaminar
-    # os resultados da pesquisa atual se alguma etapa falhasse.
+    _reset_hitl_state()
     st.session_state.pop("loaded_investigation", None)
     st.session_state.pop("pipeline_complete", None)
-    for k in ["refined", "results", "filtered", "scraped", "streamed_summary"]:
-        st.session_state.pop(k, None)
+    st.session_state.pop("pipeline_no_match", None)
+    st.session_state["hitl_in_progress"] = True
+    st.session_state["hitl_query"] = query
+    st.session_state["hitl_preset"] = selected_preset
+    st.session_state["hitl_preset_label"] = selected_preset_label
+    st.session_state["hitl_pipeline_start"] = time.time()
+
+# Lê flag HITL uma só vez para uso pelos gates abaixo.
+hitl_on = st.session_state.get("hitl_mode", False)
+
+# ---------- Execução gated do pipeline ----------
+# Só entra aqui se houver um pipeline em curso (quer tenha acabado de arrancar,
+# quer esteja a ser retomado de um rerun após um checkpoint).
+if st.session_state.get("hitl_in_progress"):
+    # Valores persistidos no arranque — sobrevivem a reruns.
+    q                    = st.session_state["hitl_query"]
+    preset               = st.session_state["hitl_preset"]
+    preset_label         = st.session_state["hitl_preset_label"]
+    pipeline_start       = st.session_state["hitl_pipeline_start"]
 
     # Obtém a lista de motores de pesquisa activos para uso na Etapa 3
     active_engines = get_active_engines()
 
-    # Marca o início do pipeline para calcular o tempo total no final
-    pipeline_start = time.time()
+    # Após um checkpoint ser aprovado, o rerun salta as etapas já executadas
+    # e, em vez de re-renderizar o `st.status` expandido (caro e ruidoso),
+    # mostra um `st.success` compacto *inline* — na mesma posição vertical que
+    # a etapa ocuparia se estivesse a correr agora. Isto preserva a ordem
+    # visual Stage 1 → Stage 2 → Stage 3 → ... no ecrã, em vez de agrupar
+    # todos os indicadores num strip no topo (o que dava a falsa impressão
+    # de a etapa ter "desaparecido").
+    def _show_completed(label: str) -> None:
+        """Indicador compacto de etapa já concluída, renderizado inline."""
+        st.success(label, icon="✅")
 
     # ------------------------------------------------------------------
-    # Etapa 1/6 — Carregamento do modelo de linguagem
+    # Etapa 1/6 — Carregamento do modelo de linguagem (sempre executada)
     # ------------------------------------------------------------------
-    # `st.status` cria um painel expansível com indicadores visuais de
-    # progresso (em curso / concluído / erro). `expanded=True` mantém o
-    # painel aberto durante a execução para que o utilizador veja os
-    # detalhes em tempo real; após conclusão, o painel pode ser colapsado.
-    # Esta etapa instancia o cliente do LLM selecionado — pode incluir
-    # validação da chave de API e estabelecimento de ligação com o servidor.
+    # O objecto `llm` é um cliente LangChain com callbacks e potencialmente
+    # conexões HTTP — não é facilmente serializável para session_state.
+    # Por isso é instanciado em TODOS os reruns (barato para Ollama local).
     with st.status("**Stage 1/6** — Loading LLM...", expanded=True) as status:
         t0 = time.time()
         try:
@@ -677,30 +622,42 @@ if run_button and query:
             status.update(label=f"**Stage 1/6** — LLM loaded ({_fmt_ms(elapsed)})", state="complete")
         except Exception as e:
             status.update(label="**Stage 1/6** — LLM failed", state="error")
-            # `_render_pipeline_error` mostra a mensagem e chama `st.stop()`,
-            # interrompendo a execução das etapas seguintes.
             _render_pipeline_error("load the selected LLM", e)
 
     # ------------------------------------------------------------------
-    # Etapa 2/6 — Refinamento da consulta com o LLM
+    # Etapa 2/6 — Refinamento da consulta com o LLM (gated)
     # ------------------------------------------------------------------
-    # A consulta original do utilizador é reformulada pelo LLM para ser
-    # mais eficaz nos motores de pesquisa da dark web. Por exemplo, termos
-    # vagos são enriquecidos com vocabulário técnico ou operacional
-    # característico dos fóruns e mercados que se pretende pesquisar.
-    # O resultado refinado é guardado em `st.session_state` para ser
-    # reutilizado nas etapas seguintes sem necessidade de o recalcular.
-    with st.status("**Stage 2/6** — Refining query...", expanded=True) as status:
-        t0 = time.time()
-        try:
-            st.session_state.refined = refine_query(llm, query, preset=selected_preset)
-            elapsed = round((time.time() - t0) * 1000)
-            st.write(f"Original: `{query}`")
-            st.write(f"Refined: `{st.session_state.refined}`")
-            status.update(label=f"**Stage 2/6** — Query refined ({_fmt_ms(elapsed)})", state="complete")
-        except Exception as e:
-            status.update(label="**Stage 2/6** — Query refinement failed", state="error")
-            _render_pipeline_error("refine the query", e)
+    # Só executa se `refined` ainda não estiver em session_state. Ao retomar
+    # o pipeline após um checkpoint, o valor persiste e esta etapa é saltada.
+    if "refined" not in st.session_state:
+        with st.status("**Stage 2/6** — Refining query...", expanded=True) as status:
+            t0 = time.time()
+            try:
+                st.session_state.refined = refine_query(llm, q, preset=preset)
+                elapsed = round((time.time() - t0) * 1000)
+                st.session_state["hitl_refine_ms"] = elapsed
+                st.write(f"Original: `{q}`")
+                st.write(f"Refined: `{st.session_state.refined}`")
+                status.update(label=f"**Stage 2/6** — Query refined ({_fmt_ms(elapsed)})", state="complete")
+            except Exception as e:
+                status.update(label="**Stage 2/6** — Query refinement failed", state="error")
+                _render_pipeline_error("refine the query", e)
+    else:
+        _show_completed(
+            f"**Stage 2/6** — Query refined ({_fmt_ms(st.session_state.get('hitl_refine_ms', 0))}): "
+            f"`{st.session_state.refined}`"
+        )
+
+    # ------------------------------------------------------------------
+    # Checkpoint 1/3 — Revisão da query refinada (HITL)
+    # ------------------------------------------------------------------
+    # Se o modo HITL está ligado e o checkpoint 1 ainda não foi aprovado,
+    # renderiza a UI de revisão e suspende o pipeline via `st.stop()`.
+    # A aprovação guarda `hitl_stage2_approved=True` + a query editada em
+    # `st.session_state.refined` e chama `st.rerun()` para retomar.
+    if hitl_on and not st.session_state.get("hitl_stage2_approved"):
+        render_stage2_review(q, st.session_state.refined)
+        st.stop()
 
     # ------------------------------------------------------------------
     # Etapa 3/6 — Pesquisa distribuída nos motores da dark web
@@ -711,158 +668,232 @@ if run_button and query:
     # lateral. Os resultados brutos são truncados ao limite `max_results`
     # e deduplicados por URL para evitar que a mesma fonte seja processada
     # várias vezes nas etapas seguintes.
-    with st.status(f"**Stage 3/6** — Searching {len(active_engines)} engines...", expanded=True) as status:
-        t0 = time.time()
-        # search.py já deduplica os resultados por URL — não é necessário
-        # repetir o processo aqui. A deduplicação dupla era redundante e O(2n).
-        st.session_state.results = cached_search_results(st.session_state.refined)
+    # ------------------------------------------------------------------
+    # Etapa 3/6 — Pesquisa distribuída nos motores da dark web (gated)
+    # ------------------------------------------------------------------
+    if "results" not in st.session_state:
+        with st.status(f"**Stage 3/6** — Searching {len(active_engines)} engines...", expanded=True) as status:
+            t0 = time.time()
+            # search.py já deduplica os resultados por URL.
+            st.session_state.results = cached_search_results(st.session_state.refined)
 
-        # Aplica o limite máximo de resultados configurado na barra lateral
-        if len(st.session_state.results) > max_results:
-            st.session_state.results = st.session_state.results[:max_results]
+            if len(st.session_state.results) > max_results:
+                st.session_state.results = st.session_state.results[:max_results]
 
-        elapsed = round((time.time() - t0) * 1000)
+            elapsed = round((time.time() - t0) * 1000)
+            st.session_state["hitl_search_ms"] = elapsed
 
-        # Estampar cada resultado com o timestamp UTC de recolha (imutável)
-        retrieved_at_utc = datetime.now(timezone.utc).isoformat()
-        for r in st.session_state.results:
-            r["retrieved_at_utc"] = retrieved_at_utc
+            # Estampar cada resultado com o timestamp UTC de recolha (imutável)
+            retrieved_at_utc = datetime.now(timezone.utc).isoformat()
+            for r in st.session_state.results:
+                r["retrieved_at_utc"] = retrieved_at_utc
 
-        st.write(f"Found **{len(st.session_state.results)}** results across {len(active_engines)} engines")
-        status.update(
-            label=f"**Stage 3/6** — {len(st.session_state.results)} results found ({_fmt_ms(elapsed)})",
-            state="complete",
+            st.write(f"Found **{len(st.session_state.results)}** results across {len(active_engines)} engines")
+            status.update(
+                label=f"**Stage 3/6** — {len(st.session_state.results)} results found ({_fmt_ms(elapsed)})",
+                state="complete",
+            )
+    else:
+        _show_completed(
+            f"**Stage 3/6** — {len(st.session_state.results)} results found "
+            f"({_fmt_ms(st.session_state.get('hitl_search_ms', 0))})"
         )
 
     # ------------------------------------------------------------------
-    # Etapa 4/6 — Filtragem por relevância com o LLM
+    # Etapa 4/6 — Filtragem por relevância com o LLM (gated)
     # ------------------------------------------------------------------
-    # O LLM avalia cada resultado bruto (título e URL) e seleciona os que
-    # são mais relevantes para a consulta e para o domínio de investigação
-    # escolhido. Esta filtragem é necessária porque os motores de pesquisa
-    # da dark web têm menor precisão do que os motores da web convencional —
-    # muitos resultados são spam, páginas de erro ou conteúdo não relacionado.
-    # Os resultados filtrados são ainda truncados ao limite `max_scrape`
-    # para controlar o tempo e o custo da etapa de extração seguinte.
-    with st.status("**Stage 4/6** — Filtering results with LLM...", expanded=True) as status:
-        t0 = time.time()
-        st.session_state.filtered = filter_results(
-            llm, st.session_state.refined, st.session_state.results
-        )
+    if "filtered" not in st.session_state:
+        with st.status("**Stage 4/6** — Filtering results with LLM...", expanded=True) as status:
+            t0 = time.time()
+            st.session_state.filtered = filter_results(
+                llm, st.session_state.refined, st.session_state.results
+            )
 
-        # Aplica o limite máximo de páginas a extrair configurado na barra lateral
-        if len(st.session_state.filtered) > max_scrape:
-            st.session_state.filtered = st.session_state.filtered[:max_scrape]
+            if len(st.session_state.filtered) > max_scrape:
+                st.session_state.filtered = st.session_state.filtered[:max_scrape]
 
-        elapsed = round((time.time() - t0) * 1000)
-        st.write(f"Filtered to **{len(st.session_state.filtered)}** most relevant results")
+            elapsed = round((time.time() - t0) * 1000)
+            st.session_state["hitl_filter_ms"] = elapsed
+            st.write(f"Filtered to **{len(st.session_state.filtered)}** most relevant results")
 
-        # Apresenta os URLs filtrados num expansor. Os URLs .onion não podem
-        # ser abertos como hiperligações normais — são apresentados como bloco
-        # de código copiável para que o utilizador os possa colar no Tor Browser.
-        with st.expander("View filtered results"):
-            st.caption("🧅 Links .onion: copia e abre no Tor Browser")
-            for i, item in enumerate(st.session_state.filtered, 1):
-                title = item.get("title", "Untitled")
-                link = item.get("link", "")
-                if ".onion" in link:
-                    # URL .onion: apresenta como texto copiável, não como
-                    # hiperligação, porque os navegadores normais não resolvem
-                    # domínios .onion sem o proxy Tor configurado.
-                    st.markdown(f"**{i}. {title}**")
-                    st.code(link, language=None)
-                else:
-                    # URL convencional (ex.: i2p ou clearnet): pode ser uma
-                    # hiperligação clicável directamente no navegador.
-                    st.markdown(f"{i}. [{title}]({link})")
+            with st.expander("View filtered results"):
+                st.caption("🧅 Links .onion: copia e abre no Tor Browser")
+                for i, item in enumerate(st.session_state.filtered, 1):
+                    title = item.get("title", "Untitled")
+                    link = item.get("link", "")
+                    if ".onion" in link:
+                        st.markdown(f"**{i}. {title}**")
+                        st.code(link, language=None)
+                    else:
+                        st.markdown(f"{i}. [{title}]({link})")
 
-        status.update(
-            label=f"**Stage 4/6** — Filtered to {len(st.session_state.filtered)} results ({_fmt_ms(elapsed)})",
-            state="complete",
+            status.update(
+                label=f"**Stage 4/6** — Filtered to {len(st.session_state.filtered)} results ({_fmt_ms(elapsed)})",
+                state="complete",
+            )
+    else:
+        _show_completed(
+            f"**Stage 4/6** — Filtered to {len(st.session_state.filtered)} results "
+            f"({_fmt_ms(st.session_state.get('hitl_filter_ms', 0))})"
         )
 
     # ------------------------------------------------------------------
-    # Etapa 5/6 — Extracção de conteúdo (scraping)
+    # Checkpoint 2/3 — Revisão dos URLs filtrados (HITL)
     # ------------------------------------------------------------------
-    # As páginas filtradas são acedidas via proxy Tor e o seu conteúdo
-    # textual é extraído. O scraping é feito em paralelo (controlado por
-    # `threads`) para mitigar a latência inerente à rede Tor.
-    # Após a extracção, as páginas com conteúdo muito curto (menos de 150
-    # caracteres) são descartadas — tipicamente correspondem a páginas de
-    # erro, redireccionamentos ou domínios que já não estão activos.
-    # O limiar de 150 caracteres é suficiente para filtrar respostas de erro
-    # genéricas (ex.: "403 Forbidden") mas suficientemente baixo para não
-    # descartar páginas legítimas com conteúdo escasso.
-    with st.status(f"**Stage 5/6** — Scraping {len(st.session_state.filtered)} pages...", expanded=True) as status:
-        t0 = time.time()
-        st.session_state.scraped = cached_scrape_multiple(
-            st.session_state.filtered, threads
+    # Oportunidade de desmarcar URLs obviamente irrelevantes antes do scraping
+    # via Tor (operação cara). Ao aprovar, `st.session_state.filtered` fica
+    # reduzido à lista seleccionada pelo utilizador.
+    if hitl_on and not st.session_state.get("hitl_stage4_approved"):
+        _ioc_type_s4, _ = detect_ioc(q)
+        render_stage4_review(
+            st.session_state.filtered,
+            raw_count=len(st.session_state.results),
+            ioc_type=_ioc_type_s4,
         )
+        st.stop()
 
-        # Filtra resultados com conteúdo insuficiente (páginas inacessíveis
-        # ou que devolveram apenas o título sem corpo de texto significativo)
-        meaningful_scraped = {
-            url: content
-            for url, content in st.session_state.scraped.items()
-            if len(content) > 150
-        }
+    # ------------------------------------------------------------------
+    # Etapa 5/6 — Extracção de conteúdo (scraping) (gated)
+    # ------------------------------------------------------------------
+    if "meaningful_scraped" not in st.session_state:
+        with st.status(f"**Stage 5/6** — Scraping {len(st.session_state.filtered)} pages...", expanded=True) as status:
+            t0 = time.time()
+            st.session_state.scraped = cached_scrape_multiple(
+                st.session_state.filtered, threads
+            )
 
-        # Filtra por relevância: descarta fontes cujo conteúdo scrapeado
-        # não menciona nenhuma keyword da query original. Isto evita que
-        # conteúdo genérico/irrelevante polua o relatório final do LLM.
-        pre_relevance_count = len(meaningful_scraped)
-        meaningful_scraped = filter_scraped_by_relevance(query, meaningful_scraped)
-        relevance_removed = pre_relevance_count - len(meaningful_scraped)
+            # Filtra páginas com pouco conteúdo (< 150 chars) — tipicamente erros.
+            meaningful_scraped = {
+                url: content
+                for url, content in st.session_state.scraped.items()
+                if len(content) > 150
+            }
 
-        # Estampar cada fonte com o timestamp UTC de scraping
-        scraped_at_utc = datetime.now(timezone.utc).isoformat()
-        for item in st.session_state.filtered:
-            if item.get("link", "") in meaningful_scraped:
-                item["scraped_at_utc"] = scraped_at_utc
+            # Filtra por relevância: descarta fontes sem keywords da query original.
+            pre_relevance_count = len(meaningful_scraped)
+            meaningful_scraped = filter_scraped_by_relevance(q, meaningful_scraped)
+            relevance_removed = pre_relevance_count - len(meaningful_scraped)
 
-        # Calcular hashes SHA-256 para cadeia de custódia forense
-        integrity = compute_integrity_hashes(meaningful_scraped)
-        st.session_state.integrity = integrity
+            # Estampar cada fonte com o timestamp UTC de scraping
+            scraped_at_utc = datetime.now(timezone.utc).isoformat()
+            for item in st.session_state.filtered:
+                if item.get("link", "") in meaningful_scraped:
+                    item["scraped_at_utc"] = scraped_at_utc
 
-        elapsed = round((time.time() - t0) * 1000)
-        scraped_count = len(meaningful_scraped)
-        failed_count = len(st.session_state.scraped) - scraped_count
+            # Hashes SHA-256 para cadeia de custódia forense
+            integrity = compute_integrity_hashes(meaningful_scraped)
+            st.session_state.integrity = integrity
+            st.session_state["meaningful_scraped"] = meaningful_scraped
 
-        note = f" ({failed_count} inaccessible pages removed)" if failed_count else ""
-        relevance_note = f" ({relevance_removed} irrelevant pages removed)" if relevance_removed else ""
-        st.write(f"Scraped **{scraped_count}** pages with content{note}{relevance_note}")
-        st.caption(f"Hash global SHA-256: `{integrity['overall_sha256'][:16]}...`")
+            elapsed = round((time.time() - t0) * 1000)
+            st.session_state["hitl_scrape_ms"] = elapsed
+            scraped_count = len(meaningful_scraped)
+            failed_count = len(st.session_state.scraped) - scraped_count
+            st.session_state["hitl_failed_count"] = failed_count
+            st.session_state["hitl_relevance_removed"] = relevance_removed
 
-        # Expande para mostrar o conteúdo efectivamente recolhido em cada fonte.
-        # Permite ao utilizador verificar o que foi raspado antes do Stage 6,
-        # tornando o pipeline transparente e auditável.
-        # O LLM analisa este mesmo conteúdo em detalhe na Etapa 6/6.
-        with st.expander(f"📄 Conteúdo recolhido por fonte ({scraped_count})", expanded=False):
-            st.caption("Texto extraído de cada página — o LLM lê e analisa este conteúdo na Etapa 6/6")
-            for url, content in list(meaningful_scraped.items()):
-                # Recupera o título a partir dos resultados filtrados
-                title = next(
-                    (r.get("title", "Sem título") for r in st.session_state.filtered
-                     if r.get("link") == url),
-                    "Sem título",
+            note = f" ({failed_count} inaccessible pages removed)" if failed_count else ""
+            relevance_note = f" ({relevance_removed} irrelevant pages removed)" if relevance_removed else ""
+            st.write(f"Scraped **{scraped_count}** pages with content{note}{relevance_note}")
+            st.caption(f"Hash global SHA-256: `{integrity['overall_sha256'][:16]}...`")
+
+            # --------------------------------------------------------
+            # Paragem defensiva: se a query é um IOC e o filtro estrito
+            # rejeitou TODAS as fontes (i.e. nenhuma contém o indicador
+            # literal), não faz sentido invocar o LLM — produziria uma
+            # análise alucinada. Aborta o pipeline com mensagem clara.
+            # --------------------------------------------------------
+            ioc_type, ioc_value = detect_ioc(q)
+            if ioc_type and scraped_count == 0:
+                status.update(
+                    label=f"**Stage 5/6** — 0 sources contain the {ioc_type} IOC",
+                    state="error",
                 )
-                st.markdown(f"**{title}**")
-                # Links .onion como bloco copiável; clearweb como inline code
-                if ".onion" in url:
-                    st.code(url, language=None)
-                else:
-                    st.markdown(f"`{url}`")
-                # Excerto dos primeiros 500 caracteres do conteúdo raspado
-                excerpt = content[:500].strip()
-                if len(content) > 500:
-                    excerpt += " …"
-                st.markdown(f"*{excerpt}*")
-                st.divider()
+                st.error(
+                    f"**Pipeline interrompido — sem correspondência para o IOC.**\n\n"
+                    f"A query é um indicador técnico específico do tipo "
+                    f"`{ioc_type}` (`{ioc_value}`), mas **nenhuma das "
+                    f"{pre_relevance_count} fontes recolhidas contém esse "
+                    f"indicador no seu conteúdo**.\n\n"
+                    f"Gerar um sumário LLM com fontes que não contêm o IOC "
+                    f"produziria análise alucinada. Sugestões:\n"
+                    f"• Refinar a query (ex.: para emails, pesquisar apenas "
+                    f"a parte local: `{ioc_value.split('@')[0] if ioc_type == 'email' else '…'}`)\n"
+                    f"• Experimentar outros motores de pesquisa na sidebar\n"
+                    f"• Adicionar contexto textual à query (ex.: nome do "
+                    f"grupo ransomware, família de malware, data)"
+                )
+                # Marca o pipeline como terminado sem sumário para evitar
+                # que o rerun seguinte re-execute tudo. `pipeline_no_match`
+                # sobrevive aos reruns e é lido pelo bloco de apresentação
+                # persistente mais abaixo para re-render do banner.
+                st.session_state["hitl_in_progress"] = False
+                st.session_state["pipeline_no_match"] = {
+                    "ioc_type": ioc_type,
+                    "ioc_value": ioc_value,
+                    "sources_analysed": pre_relevance_count,
+                    "query": q,
+                }
+                st.stop()
 
-        status.update(
-            label=f"**Stage 5/6** — {scraped_count} pages scraped ({_fmt_ms(elapsed)})",
-            state="complete",
+            with st.expander(f"📄 Conteúdo recolhido por fonte ({scraped_count})", expanded=False):
+                st.caption("Texto extraído de cada página — o LLM lê e analisa este conteúdo na Etapa 6/6")
+                for url, content in list(meaningful_scraped.items()):
+                    title = next(
+                        (r.get("title", "Sem título") for r in st.session_state.filtered
+                         if r.get("link") == url),
+                        "Sem título",
+                    )
+                    st.markdown(f"**{title}**")
+                    if ".onion" in url:
+                        st.code(url, language=None)
+                    else:
+                        st.markdown(f"`{url}`")
+                    excerpt = content[:500].strip()
+                    if len(content) > 500:
+                        excerpt += " …"
+                    st.markdown(f"*{excerpt}*")
+                    st.divider()
+
+            status.update(
+                label=f"**Stage 5/6** — {scraped_count} pages scraped ({_fmt_ms(elapsed)})",
+                state="complete",
+            )
+    else:
+        meaningful_scraped = st.session_state["meaningful_scraped"]
+        scraped_count = len(meaningful_scraped)
+        _show_completed(
+            f"**Stage 5/6** — {scraped_count} pages scraped "
+            f"({_fmt_ms(st.session_state.get('hitl_scrape_ms', 0))})"
         )
+
+    # ------------------------------------------------------------------
+    # Checkpoint 3/3 — Revisão do conteúdo scrapeado (HITL)
+    # ------------------------------------------------------------------
+    # Último filtro antes do LLM gerar o sumário. O utilizador vê um excerto
+    # de cada fonte e pode desmarcar as que têm conteúdo irrelevante.
+    if hitl_on and not st.session_state.get("hitl_stage5_approved"):
+        _ioc_type_s5, _ = detect_ioc(q)
+        render_stage5_review(
+            st.session_state["meaningful_scraped"],
+            st.session_state.filtered,
+            relevance_removed=st.session_state.get("hitl_relevance_removed", 0),
+            failed_count=st.session_state.get("hitl_failed_count", 0),
+            ioc_type=_ioc_type_s5,
+        )
+        st.stop()
+
+    # Resolve o conjunto final de fontes que alimentam o Stage 6:
+    #   • HITL ON + aprovado → só as fontes escolhidas pelo utilizador
+    #   • HITL OFF          → todas as que passaram nos filtros automáticos
+    final_scraped = st.session_state.get(
+        "hitl_approved_scraped",
+        st.session_state["meaningful_scraped"],
+    )
+    # Recalcula integrity sobre as fontes finalmente aprovadas (cadeia de custódia)
+    integrity = compute_integrity_hashes(final_scraped)
+    st.session_state.integrity = integrity
+    scraped_count = len(final_scraped)
 
     # ------------------------------------------------------------------
     # Etapa 6/6 — Geração do relatório de inteligência (streaming)
@@ -881,55 +912,29 @@ if run_button and query:
     # que acumula os fragmentos em `streamed_summary` e actualiza o
     # componente `summary_slot` (um `st.empty`) a cada novo fragmento.
 
-    # Inicializa a cadeia de texto do relatório no estado de sessão para
-    # que o callback `ui_emit` possa acumular os fragmentos incrementalmente.
+    # Inicializa a string do relatório no session_state (apagada a cada nova pesquisa).
     st.session_state.streamed_summary = ""
 
-    # Cria o contentor do relatório acima do painel de estado da Etapa 6.
-    # Desta forma o relatório aparece visualmente antes do painel de estado,
-    # proporcionando uma leitura mais natural do topo para o fundo.
     findings_container = st.container()
     with findings_container:
         st.subheader(":red[Findings]", anchor=None, divider="gray")
-        # `st.empty()` cria um espaço reservado que pode ser actualizado
-        # repetidamente sem adicionar novos elementos à página — essencial
-        # para o efeito de streaming incremental.
         summary_slot = st.empty()
 
     def ui_emit(chunk: str):
-        """Callback invocado pelo `BufferedStreamingHandler` a cada fragmento do LLM.
-
-        Acumula o texto gerado em `streamed_summary` e actualiza o componente
-        `summary_slot` com o texto completo acumulado até ao momento.
-        A substituição completa do texto (em vez de apenas acrescentar o
-        fragmento) garante que o Markdown é renderizado correctamente mesmo
-        quando os fragmentos dividem elementos de formatação (ex.: `**negrito**`
-        dividido entre dois fragmentos consecutivos).
-
-        Args:
-            chunk: Fragmento de texto devolvido pelo LLM nesta iteração.
-        """
+        """Callback do BufferedStreamingHandler — acumula e re-renderiza o markdown."""
         st.session_state.streamed_summary += chunk
         summary_slot.markdown(st.session_state.streamed_summary)
 
-    # O painel de estado da Etapa 6 fica visível enquanto o LLM está a gerar
-    # o relatório, indicando ao utilizador que o pipeline ainda está em curso.
     with st.status("**Stage 6/6** — Generating intelligence summary...", expanded=True) as status:
         t0 = time.time()
-
-        # Configura o handler de streaming e associa-o ao cliente do LLM.
-        # O `BufferedStreamingHandler` garante que fragmentos muito pequenos
-        # são agrupados antes de actualizar a interface, reduzindo o número
-        # de re-renders e melhorando o desempenho visual.
         stream_handler = BufferedStreamingHandler(ui_callback=ui_emit)
         llm.callbacks = [stream_handler]
 
-        # Invoca a geração do relatório. O resultado da função não é usado
-        # directamente porque o texto já foi acumulado em `streamed_summary`
-        # pelo callback `ui_emit` durante o streaming.
+        # `final_scraped` reflecte a selecção do utilizador (se HITL ON) ou
+        # todas as fontes automáticas (se HITL OFF).
         _ = generate_summary(
-            llm, query, meaningful_scraped,
-            preset=selected_preset, custom_instructions=custom_instructions,
+            llm, q, final_scraped,
+            preset=preset, custom_instructions=custom_instructions,
         )
         elapsed = round((time.time() - t0) * 1000)
         status.update(
@@ -941,55 +946,57 @@ if run_button and query:
     # Persistência e apresentação final dos resultados
     # ------------------------------------------------------------------
 
+    # Apenas as fontes efectivamente usadas no sumário são guardadas
+    # como "sources" da investigação (respeita a selecção do utilizador).
+    final_urls = set(final_scraped.keys())
+    sources_used = [r for r in st.session_state.filtered if r.get("link") in final_urls]
+    if not sources_used:
+        # Fallback: se por alguma razão não houver match por URL, guarda a lista toda.
+        sources_used = st.session_state.filtered
+
     total_elapsed = round(time.time() - pipeline_start, 1)
     pipeline_ms = int(total_elapsed * 1000)
 
-    # Gerar ID único para esta investigação (usado no PDF e no log de auditoria)
     audit_id = str(uuid.uuid4())
-    integrity = st.session_state.get("integrity", {})
 
-    # Guardar investigação em disco com campos forenses completos
     _fname = save_investigation(
-        query=query,
+        query=q,
         refined_query=st.session_state.refined,
         model=model,
-        preset_label=selected_preset_label,
-        sources=st.session_state.filtered,
+        preset_label=preset_label,
+        sources=sources_used,
         summary=st.session_state.streamed_summary,
         audit_id=audit_id,
         active_engines=[e["name"] for e in active_engines],
         integrity=integrity,
     )
 
-    # Registar no log de auditoria
     log_investigation({
         "audit_id": audit_id,
-        "query": query,
+        "query": q,
         "refined_query": st.session_state.refined,
         "model": model,
-        "preset": selected_preset_label,
+        "preset": preset_label,
         "engines_active": [e["name"] for e in active_engines],
         "results_found": len(st.session_state.results),
         "results_filtered": len(st.session_state.filtered),
         "results_scraped": scraped_count,
         "summary_length_chars": len(st.session_state.streamed_summary),
         "pipeline_duration_ms": pipeline_ms,
+        "hitl_mode": hitl_on,
         "errors": [],
     })
 
     st.success(f"Pipeline completed in {_fmt_ms(pipeline_ms)} — saved as `{_fname}`")
 
-    # Guarda todos os dados necessários para apresentação persistente.
-    # Este dicionário permite re-renderizar resultados + downloads em
-    # reruns subsequentes (ex.: após clicar num botão de download)
-    # sem que o pipeline precise de ser reexecutado.
+    # Guarda dados para apresentação persistente (sobrevive a reruns).
     st.session_state["pipeline_complete"] = {
         "audit_id": audit_id,
-        "query": query,
+        "query": q,
         "refined": st.session_state.refined,
         "model": model,
-        "preset_label": selected_preset_label,
-        "filtered": st.session_state.filtered,
+        "preset_label": preset_label,
+        "filtered": sources_used,
         "results_count": len(st.session_state.results),
         "scraped_count": scraped_count,
         "summary": st.session_state.streamed_summary,
@@ -999,19 +1006,20 @@ if run_button and query:
         "fname": _fname,
     }
 
-    # Apresentação inline imediata (durante o run do pipeline)
+    # Apresentação inline imediata (neste rerun)
     with st.expander("Notes", expanded=False):
         st.markdown(f"**Refined Query:** `{st.session_state.refined}`")
-        st.markdown(f"**Model:** `{model}` | **Domain:** {selected_preset_label}")
+        st.markdown(f"**Model:** `{model}` | **Domain:** {preset_label}")
         st.markdown(
             f"**Results found:** {len(st.session_state.results)} | "
             f"**Filtered to:** {len(st.session_state.filtered)} | "
             f"**Scraped:** {scraped_count}"
+            + (" | **HITL:** on" if hitl_on else "")
         )
 
-    with st.expander(f"Sources ({len(st.session_state.filtered)} results)", expanded=False):
+    with st.expander(f"Sources ({len(sources_used)} results)", expanded=False):
         st.caption("🧅 Links .onion: copia e abre no Tor Browser")
-        for i, item in enumerate(st.session_state.filtered, 1):
+        for i, item in enumerate(sources_used, 1):
             title = item.get("title", "Untitled")
             link = item.get("link", "")
             if ".onion" in link:
@@ -1026,13 +1034,13 @@ if run_button and query:
 
         pdf_data = {
             "audit_id": audit_id,
-            "query": query,
+            "query": q,
             "refined_query": st.session_state.refined,
             "model": model,
-            "preset": selected_preset_label,
+            "preset": preset_label,
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "active_engines": [e["name"] for e in active_engines],
-            "sources": st.session_state.filtered,
+            "sources": sources_used,
             "integrity": integrity,
             "summary": st.session_state.streamed_summary,
             "results_found": len(st.session_state.results),
@@ -1057,6 +1065,9 @@ if run_button and query:
             use_container_width=True,
         )
 
+    # Pipeline concluído — libertar o flag HITL para permitir nova pesquisa.
+    st.session_state["hitl_in_progress"] = False
+
 
 # ---------------------------------------------------------------------------
 # Apresentação persistente de resultados (sobrevive a reruns do Streamlit)
@@ -1066,6 +1077,33 @@ if run_button and query:
 # Este bloco independente renderiza os resultados a partir dos dados
 # guardados em `pipeline_complete`, garantindo que Notes, Sources, Findings
 # e botões de download permanecem visíveis após o download.
+
+# Banner persistente para o caso "IOC sem correspondência" — produzido pelo
+# filtro estrito (filter_scraped_by_relevance em modo IOC) quando nenhuma
+# fonte contém literalmente o indicador pesquisado. Sobrevive a reruns até
+# que o utilizador inicie nova pesquisa ou carregue uma investigação antiga.
+if (
+    "pipeline_no_match" in st.session_state
+    and not run_button
+    and "loaded_investigation" not in st.session_state
+):
+    _nm = st.session_state["pipeline_no_match"]
+    _suggestion = ""
+    if _nm["ioc_type"] == "email" and "@" in _nm["ioc_value"]:
+        _local = _nm["ioc_value"].split("@")[0]
+        _suggestion = f"\n• Para emails, tenta pesquisar apenas a parte local: `{_local}`"
+    st.error(
+        f"**Pipeline interrompido — sem correspondência para o IOC.**\n\n"
+        f"A query `{_nm['query']}` é um indicador técnico do tipo "
+        f"`{_nm['ioc_type']}`, mas **nenhuma das {_nm['sources_analysed']} "
+        f"fontes recolhidas contém esse indicador no seu conteúdo**.\n\n"
+        f"Gerar um sumário LLM sobre fontes que não contêm o IOC produziria "
+        f"análise alucinada. Sugestões:"
+        f"{_suggestion}\n"
+        f"• Experimentar outros motores de pesquisa na sidebar\n"
+        f"• Adicionar contexto textual à query (ex.: nome do grupo ransomware, "
+        f"família de malware, ou data relevante)"
+    )
 
 if "pipeline_complete" in st.session_state and not run_button and "loaded_investigation" not in st.session_state:
     _pc = st.session_state["pipeline_complete"]

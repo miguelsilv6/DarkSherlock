@@ -91,9 +91,9 @@
 |------|-------------|
 | **Home** | Main investigation interface with full pipeline, streaming results, PDF/MD download |
 | **Search Engines** | Manage, test, enable/disable, edit, add, and reset dark web search engines |
-| **Investigation** | Alternative pipeline view with full sidebar settings accessible during execution |
 | **Help** | Complete documentation, pipeline explanation, configuration guide, and tips |
 | **Debug** | Audit log table, application log viewer with level filter, metrics, and log cleanup |
+| **Settings** | Global pipeline configuration (model, threads, limits, preset, health checks) |
 
 ---
 
@@ -413,9 +413,9 @@ DarkSherlock/
 ├── Home.py                    # Main page — investigation pipeline
 ├── pages/
 │   ├── 1_⚙️_Search_Engines.py  # Engine management & health checks
-│   ├── 2_🔍_Investigation.py   # Alternative pipeline with full sidebar
-│   ├── 3_❓_Help.py            # Documentation & help
-│   └── 4_🐛_Debug.py           # Audit log, app log, diagnostics
+│   ├── 2_❓_Help.py            # Documentation & help
+│   ├── 3_🐛_Debug.py           # Audit log, app log, diagnostics
+│   └── 4_🛠️_Settings.py        # Global pipeline configuration & health checks
 ├── llm.py                     # LLM integration, prompts, presets
 ├── llm_utils.py               # Model registry, streaming handler
 ├── search.py                  # Multi-engine Tor search (shared sessions)

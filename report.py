@@ -21,6 +21,7 @@ import hashlib
 import textwrap
 from datetime import datetime, timezone
 from fpdf import FPDF
+from fpdf.enums import XPos, YPos
 
 
 # ---------------------------------------------------------------------------
@@ -258,9 +259,12 @@ def generate_forensic_pdf(data: dict) -> bytes:
         pdf.set_fill_color(30, 30, 60)
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(0, 8, f"  {_safe(title)}", fill=True)
+        pdf.cell(
+            0, 8, f"  {_safe(title)}", fill=True,
+            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+        )
         pdf.set_text_color(0, 0, 0)
-        pdf.ln(5)
+        pdf.ln(3)
 
     def _field(label: str, value: str):
         """Campo de metadados com label em negrito."""
@@ -315,17 +319,25 @@ def generate_forensic_pdf(data: dict) -> bytes:
 
     pdf.ln(2)
     pdf.set_font("Helvetica", "B", 9)
-    pdf.cell(0, 6, "Hash Global da Investigacao (SHA-256):")
-    pdf.ln(6)
+    pdf.cell(
+        0, 6, "Hash Global da Investigacao (SHA-256):",
+        new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+    )
     pdf.set_fill_color(240, 240, 245)
     pdf.set_font("Courier", "", 8)
-    pdf.cell(0, 7, f"  {overall}", fill=True)
-    pdf.ln(8)
+    pdf.cell(
+        0, 7, f"  {overall}", fill=True,
+        new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+    )
+    pdf.ln(4)
 
     # Tabela de hashes por fonte
     pdf.set_font("Helvetica", "B", 9)
-    pdf.cell(0, 6, "Hashes por Fonte:")
-    pdf.ln(5)
+    pdf.cell(
+        0, 6, "Hashes por Fonte:",
+        new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+    )
+    pdf.ln(1)
 
     source_hashes = integrity.get("sources", {})
     pdf.set_font("Courier", "", 7)
@@ -335,12 +347,17 @@ def generate_forensic_pdf(data: dict) -> bytes:
         # URL truncada para caber na linha
         short_url = (url[:55] + "...") if len(url) > 58 else url
         pdf.set_fill_color(248, 248, 252)
-        pdf.cell(0, 5, f"  {_safe(short_url)}", fill=True, border=0)
-        pdf.ln(5)
+        pdf.cell(
+            0, 5, f"  {_safe(short_url)}", fill=True, border=0,
+            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+        )
         pdf.set_x(15)
         pdf.set_fill_color(240, 245, 240)
-        pdf.cell(0, 5, f"    SHA-256: {sha}", fill=True, border=0)
-        pdf.ln(6)
+        pdf.cell(
+            0, 5, f"    SHA-256: {sha}", fill=True, border=0,
+            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+        )
+        pdf.ln(2)
 
     # -----------------------------------------------------------------------
     # PÁGINA — Fontes Analisadas
@@ -369,8 +386,10 @@ def generate_forensic_pdf(data: dict) -> bytes:
         pdf.set_font("Courier", "", 7)
         pdf.set_fill_color(245, 245, 250)
         short_link = (_safe(link[:75]) + "...") if len(link) > 78 else _safe(link)
-        pdf.cell(0, 5, f"  URL: {short_link}", fill=True)
-        pdf.ln(5)
+        pdf.cell(
+            0, 5, f"  URL: {short_link}", fill=True,
+            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+        )
 
         # Timestamps
         if retrieved or scraped:
@@ -381,16 +400,20 @@ def generate_forensic_pdf(data: dict) -> bytes:
                 ts_line.append(f"Recolhido: {retrieved} UTC")
             if scraped:
                 ts_line.append(f"Scrapeado: {scraped} UTC")
-            pdf.cell(0, 5, "  " + "  |  ".join(ts_line))
-            pdf.ln(5)
+            pdf.cell(
+                0, 5, "  " + "  |  ".join(ts_line),
+                new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+            )
             pdf.set_text_color(0, 0, 0)
 
         # Hash da fonte
         if src_hash != "N/A":
             pdf.set_font("Courier", "", 7)
             pdf.set_fill_color(240, 248, 240)
-            pdf.cell(0, 5, f"  SHA-256: {src_hash}", fill=True)
-            pdf.ln(5)
+            pdf.cell(
+                0, 5, f"  SHA-256: {src_hash}", fill=True,
+                new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+            )
 
         pdf.ln(3)
 
@@ -480,8 +503,11 @@ def generate_forensic_pdf(data: dict) -> bytes:
     for titulo, descricao in etapas:
         pdf.set_fill_color(230, 230, 245)
         pdf.set_font("Helvetica", "B", 9)
-        pdf.cell(0, 7, f"  {_safe(titulo)}", fill=True)
-        pdf.ln(4)
+        pdf.cell(
+            0, 7, f"  {_safe(titulo)}", fill=True,
+            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+        )
+        pdf.ln(2)
         pdf.set_font("Helvetica", "", 9)
         pdf.multi_cell(0, 6, _safe(descricao))
         pdf.ln(5)
