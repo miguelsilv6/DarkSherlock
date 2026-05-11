@@ -24,6 +24,7 @@ import requests
 import random, re
 import json
 import os
+from typing import Dict, Optional
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -31,6 +32,10 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 import warnings
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Suprimir avisos SSL/TLS e de verificação de certificados — irrelevante no
 # contexto .onion, onde os domínios são endereços criptográficos por natureza.
 warnings.filterwarnings("ignore")
@@ -95,6 +100,8 @@ SEARCH_ENGINES = [
         ),
         "default_enabled": False,
         "keep_same_domain_results": True,
+        # Credenciais via cookie de sessão MyBB (variável de ambiente ou Settings UI).
+        "auth_cookie_env": "DARKFORUMS_COOKIE",
     },
 
     # ---------------------------------------------------------------------------
@@ -130,6 +137,63 @@ SEARCH_ENGINES = [
 # DEFAULT_SEARCH_ENGINES directamente (e.g., versões anteriores do projecto).
 # A lógica de pesquisa actual lê os motores activos via engine_manager.py.
 DEFAULT_SEARCH_ENGINES = [e["url"] for e in SEARCH_ENGINES]
+
+_RE_ONION_DOMAIN = re.compile(r'https?://([a-z0-9.]+\.onion)')
+
+
+def parse_cookie_header(header: str) -> Dict[str, str]:
+    """Converte uma string 'Cookie:' (nome=valor; …) num dict para requests."""
+    out: Dict[str, str] = {}
+    if not header or not header.strip():
+        return out
+    for part in header.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        key, _, val = part.partition("=")
+        key, val = key.strip(), val.strip()
+        if key:
+            out[key] = val
+    return out
+
+
+def resolve_forum_cookies(
+    engine: dict,
+    forum_cookie_overrides: Optional[Dict[str, str]] = None,
+) -> Optional[Dict[str, str]]:
+    """Resolve cookies HTTP para um motor com sessão opcional (ex.: MyBB).
+
+    Prioridade: overrides pelo nome do motor → variável de ambiente ``auth_cookie_env``.
+    """
+    forum_cookie_overrides = forum_cookie_overrides or {}
+    name = engine.get("name", "")
+    raw = ""
+    if name in forum_cookie_overrides and forum_cookie_overrides[name].strip():
+        raw = forum_cookie_overrides[name].strip()
+    elif engine.get("auth_cookie_env"):
+        raw = os.getenv(engine["auth_cookie_env"], "").strip()
+    if not raw:
+        return None
+    parsed = parse_cookie_header(raw)
+    return parsed if parsed else None
+
+
+def cookies_for_forum_scrape(
+    url: str,
+    forum_cookie_overrides: Optional[Dict[str, str]] = None,
+) -> Optional[Dict[str, str]]:
+    """Cookies no scrape Tor quando o URL pertence a um motor activo com auth opcional."""
+    from engine_manager import load_engines
+
+    for eng in load_engines():
+        if not eng.get("enabled", True) or not eng.get("auth_cookie_env"):
+            continue
+        m = _RE_ONION_DOMAIN.search(eng["url"])
+        if not m:
+            continue
+        if m.group(1) in url:
+            return resolve_forum_cookies(eng, forum_cookie_overrides)
+    return None
 
 
 def get_tor_session():
@@ -184,7 +248,7 @@ def get_tor_session():
     return session
 
 
-def fetch_search_results(endpoint, query, session=None):
+def fetch_search_results(endpoint, query, session=None, cookies=None):
     """
     Envia uma query a um único motor de pesquisa .onion e extrai os resultados.
 
@@ -209,6 +273,7 @@ def fetch_search_results(endpoint, query, session=None):
             cria uma nova sessão dedicada para este motor. Passar uma sessão
             partilhada elimina o overhead de estabelecimento de circuito Tor
             multiplicado pelo número de motores pesquisados em paralelo.
+        cookies (dict | None): cookies HTTP opcionais (sessão MyBB / login).
 
     Retorna:
         list[dict]: lista de dicionários {"title": str, "link": str},
@@ -227,7 +292,9 @@ def fetch_search_results(endpoint, query, session=None):
     try:
         # Timeout de 40 segundos — valor elevado justificado pela alta latência
         # inerente à rede Tor (múltiplos saltos criptográficos entre nós).
-        response = session.get(url, headers=headers, timeout=40)
+        response = session.get(
+            url, headers=headers, cookies=cookies or None, timeout=40
+        )
 
         if response.status_code == 200:
             # Usar BeautifulSoup para parsing tolerante a HTML malformado,
@@ -285,10 +352,11 @@ def fetch_search_results(endpoint, query, session=None):
         return []
 
 
-_RE_ONION_DOMAIN = re.compile(r'https?://([a-z0-9.]+\.onion)')
-
-
-def get_search_results(refined_query, max_workers=5):
+def get_search_results(
+    refined_query,
+    max_workers=5,
+    forum_cookie_overrides: Optional[Dict[str, str]] = None,
+):
     """
     Orquestra a pesquisa concorrente em todos os motores de pesquisa activos.
 
@@ -301,6 +369,8 @@ def get_search_results(refined_query, max_workers=5):
     Argumentos:
         refined_query (str): query de pesquisa já refinada pelo LLM.
         max_workers (int): número máximo de threads concorrentes. Padrão: 5.
+        forum_cookie_overrides: mapa opcional nome_do_motor → string Cookie
+            (ex.: ``{\"DarkForums\": \"mybb[user]=…\"}``).
 
     Retorna:
         list[dict]: lista deduplicada e filtrada de resultados.
@@ -310,7 +380,6 @@ def get_search_results(refined_query, max_workers=5):
     active_engines = [
         e for e in load_engines() if e.get("enabled", True)
     ]
-    active_urls = [e["url"] for e in active_engines]
 
     # Domínios dos motores onde queremos filtrar links para o próprio host
     # (evitar listar a UI do motor). Fóruns definem keep_same_domain_results.
@@ -327,8 +396,16 @@ def get_search_results(refined_query, max_workers=5):
     shared_session = get_tor_session()
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(fetch_search_results, endpoint, refined_query, shared_session)
-                   for endpoint in active_urls]
+        futures = [
+            executor.submit(
+                fetch_search_results,
+                eng["url"],
+                refined_query,
+                shared_session,
+                resolve_forum_cookies(eng, forum_cookie_overrides),
+            )
+            for eng in active_engines
+        ]
 
         for future in as_completed(futures):
             result_urls = future.result()

@@ -6,6 +6,8 @@ reutilizáveis. O DarkSherlock utiliza exclusivamente modelos locais via Ollama.
 
 Variáveis configuráveis:
     - OLLAMA_BASE_URL : URL base do servidor Ollama local (ex: http://localhost:11434).
+    - DARKFORUMS_COOKIE : (opcional) cabeçalho Cookie HTTP para sessão MyBB no DarkForums,
+      quando a pesquisa e o scraping exigem conta. Alternativa: campo na página Settings.
 """
 
 import os
@@ -16,3 +18,4 @@ load_dotenv()
 # URL base do servidor Ollama local.
 # Exemplo: http://localhost:11434
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+

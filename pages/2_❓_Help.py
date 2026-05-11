@@ -147,13 +147,16 @@ que mantem uma lista actualizada de recursos .onion verificados como ONLINE.
 Estes engines vem **desactivados por omissao** — activa-os individualmente e testa com
 "Test All Engines" antes de usar no pipeline.
 
-**DarkForums (MyBB):** O projecto inclui um motor opcional para pesquisa por keywords no
-forum DarkForums (URL MyBB `search.php?action=results&keywords={query}`). Esta engine vem
-**desactivada por omissao** — o endereco .onion pode mudar, e o acesso deve limitar-se a
-**uso legal e autorizado**. Depois de activar, usa "Test All Engines" para confirmar
-conectividade via Tor. Os links relativos dos resultados (ex.: `showthread.php`) sao
-resolvidos automaticamente; threads no mesmo dominio .onion **nao** sao descartados como
-"meta-resultados" (comportamento distinto dos motores tipo Ahmia).
+**DarkForums (MyBB):** O forum **exige conta** — pesquisa e leitura de threads funcionam em
+sessao autenticada. Em **Settings**, cola o cabecalho **Cookie** copiado do Tor Browser apos
+login (ou define `DARKFORUMS_COOKIE` no `.env`; o campo na UI tem prioridade). Sem sessao,
+os pedidos sao anonimos e normalmente **nao** devolvem resultados uteis.
+
+O motor usa `search.php?action=results&keywords={query}`, vem **desactivado por omissao**,
+e o endereco .onion pode mudar — **uso legal e autorizado** apenas. Depois de activar o motor
+e configurar o cookie, usa "Test All Engines" para confirmar conectividade via Tor. Os links
+relativos (ex.: `showthread.php`) sao resolvidos automaticamente; threads no mesmo dominio
+.onion **nao** sao descartadas como "meta-resultados" (comportamento distinto dos motores tipo Ahmia).
 """)
 
 st.subheader("Debug & Logs")

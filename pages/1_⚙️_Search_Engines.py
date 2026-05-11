@@ -87,12 +87,19 @@ if "engine_health" not in st.session_state:
         tor_result = check_tor_proxy()
 
         if tor_result["status"] == "up":
-            # Passo 2: Constrói a lista de engines para testar (nome + URL)
-            test_engines = [{"name": e["name"], "url": e["url"]} for e in engines]
+            # Passo 2: Lista completa (metadados auth_cookie_env para DarkForums / MyBB)
+            test_engines = engines
+            _fd_ov = {}
+            if (dc := (st.session_state.get("darkforums_cookie") or "").strip()):
+                _fd_ov["DarkForums"] = dc
 
             # Passo 3: Testa todos os engines em paralelo (até 8 workers simultâneos)
             # O parâmetro max_workers controla a concorrência dos pedidos HTTP via Tor
-            results = check_engines_list(test_engines, max_workers=8)
+            results = check_engines_list(
+                test_engines,
+                max_workers=8,
+                forum_cookie_overrides=_fd_ov if _fd_ov else None,
+            )
 
             # Armazena os resultados de saúde no session_state, indexados pelo nome
             # do engine, para uso imediato na listagem abaixo e persistência entre reruns
@@ -114,6 +121,11 @@ if "engine_health" not in st.session_state:
 # ---------------------------------------------------------------------------
 st.subheader("Connection Test")
 
+st.caption(
+    "Para **DarkForums**, define primeiro o cookie de sessão em **Settings** "
+    "(ou `DARKFORUMS_COOKIE` no `.env`); caso contrário o pedido equivale a visitante sem login."
+)
+
 # Botão que desencadeia o teste manual de todos os engines
 if st.button("Test All Engines", type="primary", use_container_width=True):
     # Passo 1: Verifica primeiro se o proxy Tor está operacional
@@ -134,11 +146,18 @@ if st.button("Test All Engines", type="primary", use_container_width=True):
 
         # Constrói a lista com TODOS os engines (ativos e desativados),
         # pois o utilizador pode querer saber o estado de engines desativados
-        test_engines = [{"name": e["name"], "url": e["url"]} for e in engines]
+        test_engines = engines
+        _fd_ov = {}
+        if (dc := (st.session_state.get("darkforums_cookie") or "").strip()):
+            _fd_ov["DarkForums"] = dc
 
         with st.spinner(f"Testing {len(test_engines)} engines via Tor..."):
             # Testa todos os engines em paralelo com 8 workers
-            results = check_engines_list(test_engines, max_workers=8)
+            results = check_engines_list(
+                test_engines,
+                max_workers=8,
+                forum_cookie_overrides=_fd_ov if _fd_ov else None,
+            )
 
         # Atualiza o session_state com os novos resultados, substituindo o auto-check
         # Os resultados são um dicionário {nome_engine: resultado} para acesso rápido

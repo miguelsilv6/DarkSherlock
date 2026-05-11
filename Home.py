@@ -218,8 +218,15 @@ def load_investigations() -> list:
 # mudam frequentemente ou o estado do motor de pesquisa se altera.
 # `show_spinner=False` delega o feedback visual ao código do pipeline principal.
 
+
+def _forum_cookie_overrides_json() -> str:
+    """Serializa overrides de cookie (Settings → DarkForums) para chave de cache."""
+    dc = (st.session_state.get("darkforums_cookie") or "").strip()
+    return json.dumps({"DarkForums": dc} if dc else {}, sort_keys=True)
+
+
 @st.cache_data(ttl=200, show_spinner=False)
-def cached_search_results(refined_query: str):
+def cached_search_results(refined_query: str, forum_cookie_overrides_json: str):
     """Executa a pesquisa nos motores da dark web com cache por 200 segundos.
 
     O espaço é substituído por `+` para conformidade com a codificação
@@ -232,15 +239,21 @@ def cached_search_results(refined_query: str):
 
     Args:
         refined_query: Consulta refinada pelo LLM.
+        forum_cookie_overrides_json: JSON com cookies opcionais (ex.: DarkForums).
 
     Returns:
         Lista de resultados brutos (dicionários com `title` e `link`).
     """
-    return get_search_results(refined_query.replace(" ", "+"), max_workers=4)
+    overrides = json.loads(forum_cookie_overrides_json) if forum_cookie_overrides_json else {}
+    return get_search_results(
+        refined_query.replace(" ", "+"),
+        max_workers=4,
+        forum_cookie_overrides=overrides if overrides else None,
+    )
 
 
 @st.cache_data(ttl=200, show_spinner=False)
-def cached_scrape_multiple(filtered: list, threads: int):
+def cached_scrape_multiple(filtered: list, threads: int, forum_cookie_overrides_json: str):
     """Extrai o conteúdo textual das páginas filtradas com cache por 200 segundos.
 
     A cache é especialmente valiosa aqui porque o scraping de páginas .onion
@@ -251,11 +264,17 @@ def cached_scrape_multiple(filtered: list, threads: int):
     Args:
         filtered: Lista de resultados filtrados (devolvida pela etapa 4).
         threads:  Número de fios de execução paralela para o scraping.
+        forum_cookie_overrides_json: cookies opcionais para fóruns autenticados.
 
     Returns:
         Dicionário `{url: conteúdo_textual}` para cada página processada.
     """
-    return scrape_multiple(filtered, max_workers=threads)
+    overrides = json.loads(forum_cookie_overrides_json) if forum_cookie_overrides_json else {}
+    return scrape_multiple(
+        filtered,
+        max_workers=threads,
+        forum_cookie_overrides=overrides if overrides else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +384,12 @@ if "last_engine_check" not in st.session_state:
     with st.spinner("Checking search engines..."):
         tor_result = check_tor_proxy()
         if tor_result["status"] == "up":
-            engine_results = check_search_engines()
+            _fd_co = {}
+            if (dc := (st.session_state.get("darkforums_cookie") or "").strip()):
+                _fd_co["DarkForums"] = dc
+            engine_results = check_search_engines(
+                forum_cookie_overrides=_fd_co if _fd_co else None,
+            )
             st.session_state["last_engine_check"] = {
                 "results": engine_results,
                 "timestamp": datetime.now().isoformat(),
@@ -675,7 +699,10 @@ if st.session_state.get("hitl_in_progress"):
         with st.status(f"**Stage 3/6** — Searching {len(active_engines)} engines...", expanded=True) as status:
             t0 = time.time()
             # search.py já deduplica os resultados por URL.
-            st.session_state.results = cached_search_results(st.session_state.refined)
+            st.session_state.results = cached_search_results(
+                st.session_state.refined,
+                _forum_cookie_overrides_json(),
+            )
 
             if len(st.session_state.results) > max_results:
                 st.session_state.results = st.session_state.results[:max_results]
@@ -759,7 +786,9 @@ if st.session_state.get("hitl_in_progress"):
         with st.status(f"**Stage 5/6** — Scraping {len(st.session_state.filtered)} pages...", expanded=True) as status:
             t0 = time.time()
             st.session_state.scraped = cached_scrape_multiple(
-                st.session_state.filtered, threads
+                st.session_state.filtered,
+                threads,
+                _forum_cookie_overrides_json(),
             )
 
             # Filtra páginas com pouco conteúdo (< 150 chars) — tipicamente erros.

@@ -5,7 +5,7 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from search import get_tor_session, USER_AGENTS
-from engine_manager import get_active_engines
+from engine_manager import load_engines
 from llm import get_llm
 from llm_utils import resolve_model_config
 
@@ -162,19 +162,22 @@ def check_llm_health(model_choice):
         }
 
 
-def _ping_single_engine(engine):
+def _ping_single_engine(engine, forum_cookie_overrides=None):
     """Ping a single search engine via Tor and return its status."""
+    from search import resolve_forum_cookies
+
     name = engine["name"]
     # Extract base URL (host only) from the template URL
     url_template = engine["url"]
     # Use a dummy query to form a valid URL for the ping
     url = url_template.format(query="test")
+    cookies = resolve_forum_cookies(engine, forum_cookie_overrides)
 
     try:
         session = get_tor_session()
         headers = {"User-Agent": random.choice(USER_AGENTS)}
         start = time.time()
-        resp = session.get(url, headers=headers, timeout=20)
+        resp = session.get(url, headers=headers, cookies=cookies, timeout=20)
         latency_ms = round((time.time() - start) * 1000)
         return {
             "name": name,
@@ -191,16 +194,23 @@ def _ping_single_engine(engine):
         }
 
 
-def check_search_engines(max_workers=8):
+def check_search_engines(max_workers=8, forum_cookie_overrides=None):
     """
     Concurrently ping all active search engines via Tor.
     Returns a list of per-engine status dicts.
     """
-    engines = get_active_engines()
-    return check_engines_list(engines, max_workers=max_workers)
+    engines = [
+        e for e in load_engines()
+        if e.get("enabled", True)
+    ]
+    return check_engines_list(
+        engines,
+        max_workers=max_workers,
+        forum_cookie_overrides=forum_cookie_overrides,
+    )
 
 
-def check_engines_list(engines, max_workers=8):
+def check_engines_list(engines, max_workers=8, forum_cookie_overrides=None):
     """
     Concurrently ping a given list of engines via Tor.
     Each engine must have 'name' and 'url' keys.
@@ -209,7 +219,7 @@ def check_engines_list(engines, max_workers=8):
     results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_engine = {
-            executor.submit(_ping_single_engine, eng): eng
+            executor.submit(_ping_single_engine, eng, forum_cookie_overrides): eng
             for eng in engines
         }
         for future in as_completed(future_to_engine):

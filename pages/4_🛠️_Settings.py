@@ -170,6 +170,25 @@ else:
     st.warning("**Ollama** — `OLLAMA_BASE_URL` não definido no `.env`", icon="⚠️")
 
 # ---------------------------------------------------------------------------
+# DarkForums — sessão MyBB (pesquisa + scraping exigem conta)
+# ---------------------------------------------------------------------------
+st.divider()
+st.header("DarkForums session")
+st.caption(
+    "Inicia sessão no Tor Browser, abre as ferramentas de programador (F12) → "
+    "Network → qualquer pedido autenticado ao fórum → copia o valor completo do "
+    "cabeçalho **Cookie**. Cola abaixo (ou define `DARKFORUMS_COOKIE` no `.env`; "
+    "o campo aqui tem prioridade)."
+)
+st.text_area(
+    "HTTP Cookie (DarkForums)",
+    placeholder="mybb[user]=…; mybb[session]=…",
+    key="darkforums_cookie",
+    height=90,
+    help="Sem isto, o motor DarkForums comporta-se como visitante sem login — pesquisa e threads podem falhar.",
+)
+
+# ---------------------------------------------------------------------------
 # Health Checks
 # ---------------------------------------------------------------------------
 st.divider()
@@ -202,8 +221,13 @@ with hc2:
             )
         else:
             st.success(f"**Tor Proxy** — {tor_result['latency_ms']}ms")
+            _fd_co = {}
+            if (dc := (st.session_state.get("darkforums_cookie") or "").strip()):
+                _fd_co["DarkForums"] = dc
             with st.spinner("Pinging active search engines via Tor..."):
-                engine_results = check_search_engines()
+                engine_results = check_search_engines(
+                    forum_cookie_overrides=_fd_co if _fd_co else None,
+                )
             up_count = sum(1 for r in engine_results if r["status"] == "up")
             total = len(engine_results)
             if up_count == total:

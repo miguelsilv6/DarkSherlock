@@ -24,6 +24,7 @@ def _seed_engines() -> List[Dict]:
             "enabled": e.get("default_enabled", True),
             "is_default": True,
             "keep_same_domain_results": e.get("keep_same_domain_results", False),
+            **({"auth_cookie_env": e["auth_cookie_env"]} if e.get("auth_cookie_env") else {}),
         }
         for e in _BUILTIN_ENGINES
     ]
@@ -66,6 +67,11 @@ def load_engines() -> List[Dict]:
                 "is_default": True,
                 "keep_same_domain_results": builtin.get(
                     "keep_same_domain_results", False
+                ),
+                **(
+                    {"auth_cookie_env": builtin["auth_cookie_env"]}
+                    if builtin.get("auth_cookie_env")
+                    else {}
                 ),
             })
             new_engines_added = True

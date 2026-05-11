@@ -138,7 +138,15 @@ def _truncate_at_paragraph(text: str, max_chars: int) -> str:
     return truncated.rstrip() + "..."
 
 
-def scrape_single(url_data, session=None, rotate=False, rotate_interval=5, control_port=9051, control_password=None):
+def scrape_single(
+    url_data,
+    session=None,
+    rotate=False,
+    rotate_interval=5,
+    control_port=9051,
+    control_password=None,
+    forum_cookie_overrides=None,
+):
     """
     Raspa uma única URL e devolve o seu conteúdo textual limpo.
 
@@ -170,6 +178,8 @@ def scrape_single(url_data, session=None, rotate=False, rotate_interval=5, contr
                             (reservado, padrão 9051).
         control_password (str | None): palavra-passe do controlador Tor
                                        (reservado).
+        forum_cookie_overrides (dict | None): mapa nome_do_motor → cookie
+            HTTP para hosts que exigem sessão (ex.: DarkForums).
 
     Devolve:
         tuple[str, str]: par (url, texto_raspado) onde url é o endereço
@@ -201,7 +211,12 @@ def scrape_single(url_data, session=None, rotate=False, rotate_interval=5, contr
             # clearweb porque a rede Tor introduz latência significativa:
             # cada pedido percorre pelo menos 3 nós (circuito onion routing),
             # e serviços ocultos têm frequentemente recursos limitados.
-            response = tor_session.get(url, headers=headers, timeout=45)
+            from search import cookies_for_forum_scrape
+
+            req_cookies = cookies_for_forum_scrape(url, forum_cookie_overrides)
+            response = tor_session.get(
+                url, headers=headers, cookies=req_cookies, timeout=45
+            )
         else:
             # Alternativa para URLs da clearweb, caso a ferramenta seja
             # utilizada fora do contexto dark web. O timeout é menor (30 s)
@@ -255,7 +270,7 @@ def scrape_single(url_data, session=None, rotate=False, rotate_interval=5, contr
 
     return url, scraped_text
 
-def scrape_multiple(urls_data, max_workers=5):
+def scrape_multiple(urls_data, max_workers=5, forum_cookie_overrides=None):
     """
     Raspa múltiplas URLs em paralelo usando um pool de threads gerido.
 
@@ -283,6 +298,8 @@ def scrape_multiple(urls_data, max_workers=5):
         max_workers (int): número máximo de threads paralelas (padrão: 5).
                            Valores mais elevados aumentam o throughput mas
                            podem sobrecarregar o daemon Tor local.
+        forum_cookie_overrides (dict | None): cookies para scraping em fóruns
+            autenticados (mesmo mapa que na pesquisa).
 
     Devolve:
         dict[str, str]: dicionário que mapeia cada URL ao seu conteúdo
@@ -306,7 +323,12 @@ def scrape_multiple(urls_data, max_workers=5):
         # (url_data) a partir do future correspondente, se necessário para
         # diagnóstico ou logging futuro.
         future_to_url = {
-            executor.submit(scrape_single, url_data, shared_session): url_data
+            executor.submit(
+                scrape_single,
+                url_data,
+                shared_session,
+                forum_cookie_overrides=forum_cookie_overrides,
+            ): url_data
             for url_data in urls_data
         }
 
