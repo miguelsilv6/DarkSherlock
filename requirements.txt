@@ -7,3 +7,13 @@ python-dotenv
 langchain-ollama
 backports.tarfile
 langchain_community
+# Geração de relatórios PDF forenses (report.py: `from fpdf import FPDF`).
+# Sem isto a app NÃO arranca — Home.py importa report no topo.
+fpdf2>=2.7.0
+# Rotação de circuito Tor via control port (health.py, import tardio).
+stem>=1.8.0
+# LLM leve embutido (in-process, sem servidor) — corre em qualquer máquina.
+# llama-cpp-python distribui wheels CPU pré-compiladas; huggingface_hub
+# faz o download do GGUF na primeira utilização.
+llama-cpp-python>=0.3.0
+huggingface_hub>=0.23.0

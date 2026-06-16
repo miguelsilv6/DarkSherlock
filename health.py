@@ -7,7 +7,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from search import get_tor_session, USER_AGENTS
 from engine_manager import get_active_engines
 from llm import get_llm
-from llm_utils import resolve_model_config
 
 
 def rotate_tor_circuit(control_port: int = 9051, password: str = None) -> dict:
@@ -100,22 +99,24 @@ def check_llm_health(model_choice):
     """
     Test actual connectivity to the selected LLM by sending a minimal prompt.
 
-    O projecto suporta apenas Ollama local. `provider` é sempre "Ollama (local)".
+    Suporta dois backends: modelo leve embutido (llama.cpp in-process) e
+    Ollama local. Para um modelo embutido, este teste desencadeia o download
+    do GGUF na 1ª vez (pode demorar) e carrega-o em memória.
     Returns {status, latency_ms, error, provider}.
     """
-    config = resolve_model_config(model_choice)
-    if config is None:
-        return {
-            "status": "error",
-            "latency_ms": None,
-            "error": f"Unknown model: {model_choice}",
-            "provider": "unknown",
-        }
+    import local_models
 
-    provider = "Ollama (local)"
+    provider = (
+        "llama.cpp (embutido)"
+        if local_models.is_builtin(model_choice)
+        else "Ollama (local)"
+    )
 
     start = time.monotonic()
     try:
+        # get_llm resolve o modelo, descarrega-o (built-in, 1ª vez) e instancia.
+        # Levanta ValueError se o modelo for desconhecido; tudo é capturado pelo
+        # except abaixo para que erros de rede no download degradem graciosamente.
         llm = get_llm(model_choice)
         # Pedido mínimo — chamada mais barata possível
         response = llm.invoke("Say OK")
