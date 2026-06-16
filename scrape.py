@@ -178,6 +178,22 @@ def scrape_single(url_data, session=None, rotate=False, rotate_interval=5, contr
     """
     url = url_data['link']
 
+    # Dispatch para forum adapter, se algum reclamar este domínio.
+    # Fóruns autenticados (DarkForums, …) precisam de sessão com cookies e
+    # parsing específico — o scraper genérico não conseguiria autenticar nem
+    # extrair posts do layout MyBB correctamente.
+    try:
+        from forum_adapters import get_adapter_for_url
+        adapter = get_adapter_for_url(url)
+    except Exception:  # noqa: BLE001 — import falha não deve quebrar o scrape
+        adapter = None
+    if adapter is not None and adapter.is_configured():
+        text = adapter.fetch_thread(url)
+        if text:
+            return url, f"{url_data['title']} - {text}"
+        # Adapter falhou — cair no fallback genérico (provavelmente também
+        # falhará por falta de auth, mas mantém-se o título no pipeline).
+
     # Deteta se o destino é um serviço oculto Tor pelo sufixo ".onion".
     # Esta verificação determina se o pedido deve ser encaminhado pelo proxy
     # Tor ou enviado diretamente para a clearweb.

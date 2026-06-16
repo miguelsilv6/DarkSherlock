@@ -33,6 +33,17 @@ from engine_manager import (
 # Funções de verificação de conectividade via Tor
 from health import check_engines_list, check_tor_proxy
 
+# Forum adapters (autenticados). Import defensivo — se curl_cffi não estiver
+# instalado, o pacote falha em init e a UI deve continuar funcional para
+# engines simples.
+try:
+    from forum_adapters import get_adapter, all_adapters
+except Exception:  # noqa: BLE001
+    get_adapter = None  # type: ignore[assignment]
+    all_adapters = None  # type: ignore[assignment]
+
+from ui_theme import inject_theme
+
 # Configuração da página Streamlit: título, ícone e estado inicial da sidebar
 st.set_page_config(
     page_title="DarkSherlock — Search Engines",
@@ -40,59 +51,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-st.markdown(
-    """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');
-    html, body, [class*="css"] {
-        font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace !important;
-    }
-    h1 {
-        font-size: 1.55rem !important; font-weight: 700 !important;
-        letter-spacing: 0.12em !important; text-transform: uppercase !important;
-        color: #00ff9f !important; border-bottom: 1px solid #00ff9f33 !important;
-        padding-bottom: 0.4rem !important; margin-bottom: 1.4rem !important;
-    }
-    h2, h3 { letter-spacing: 0.06em; color: #a0f0c8; }
-    input[type="text"] {
-        background-color: #0d0d14 !important; border: 1px solid #00ff9f55 !important;
-        border-radius: 4px !important; color: #e2e8f0 !important;
-        caret-color: #00ff9f !important; font-family: inherit !important;
-        transition: border-color 0.25s ease, box-shadow 0.25s ease !important;
-    }
-    input[type="text"]:focus {
-        border-color: #00ff9f !important;
-        box-shadow: 0 0 0 1px #00ff9f, 0 0 14px #00ff9f55 !important;
-        outline: none !important;
-    }
-    .stButton > button, .stDownloadButton > button {
-        background-color: transparent !important; color: #a0f0c8 !important;
-        border: 1px solid #a0f0c833 !important; border-radius: 4px !important;
-        transition: border-color 0.2s ease !important;
-    }
-    .stButton > button:hover, .stDownloadButton > button:hover {
-        border-color: #00ff9f !important; color: #00ff9f !important;
-    }
-    button[kind="primaryFormSubmit"],
-    button[data-testid="baseButton-primary"],
-    .stButton > button[kind="primary"] {
-        background-color: #00ff9f14 !important; color: #00ff9f !important;
-        border: 1px solid #00ff9f !important; border-radius: 4px !important;
-        font-weight: 600 !important;
-    }
-    [data-testid="stStatusWidget"], div[data-testid="stExpander"] {
-        border: 1px solid #00ff9f22 !important; border-radius: 6px !important;
-        background-color: #0d0d18 !important;
-    }
-    [data-testid="stSidebar"] { border-right: 1px solid #00ff9f1a !important; }
-    [data-testid="stAlertContainer"][kind="success"] {
-        border-left: 3px solid #00ff9f !important; background-color: #00ff9f0d !important;
-    }
-    [data-testid="stAlertContainer"][kind="warning"] { border-left: 3px solid #ffcc00 !important; }
-    [data-testid="stAlertContainer"][kind="error"]   { border-left: 3px solid #ff4444 !important; }
-    </style>""",
-    unsafe_allow_html=True,
-)
+inject_theme()
 
 st.title("Search Engine Management")
 
@@ -107,8 +66,16 @@ st.caption(
     f"— Fonte adicional: [fastfire/deepdarkCTI](https://github.com/fastfire/deepdarkCTI)"
 )
 
-# Nota informativa sobre os engines provenientes do deepdarkCTI
-deepdarkCTI_engines = [e for e in engines if not e.get("enabled", True) and e.get("is_default", False)]
+# Nota informativa sobre os engines provenientes do deepdarkCTI.
+# Filtra `type=="simple"` para excluir engines de fórum autenticado, que
+# também são `is_default=True` + `enabled=False` por omissão mas não são
+# provenientes do repositório deepdarkCTI.
+deepdarkCTI_engines = [
+    e for e in engines
+    if not e.get("enabled", True)
+    and e.get("is_default", False)
+    and e.get("type", "simple") == "simple"
+]
 if deepdarkCTI_engines:
     with st.expander(f"ℹ️ {len(deepdarkCTI_engines)} engines do deepdarkCTI disponíveis (desactivados)", expanded=False):
         st.markdown(
@@ -138,7 +105,13 @@ if "engine_health" not in st.session_state:
 
         if tor_result["status"] == "up":
             # Passo 2: Constrói a lista de engines para testar (nome + URL)
-            test_engines = [{"name": e["name"], "url": e["url"]} for e in engines]
+            # Engines de fórum têm o seu próprio teste (login) — excluir do
+            # health-check HTTP genérico via Tor, que falharia perante o
+            # endpoint dinâmico (POST de login MyBB).
+            test_engines = [
+                {"name": e["name"], "url": e["url"]}
+                for e in engines if e.get("type", "simple") == "simple"
+            ]
 
             # Passo 3: Testa todos os engines em paralelo (até 8 workers simultâneos)
             # O parâmetro max_workers controla a concorrência dos pedidos HTTP via Tor
@@ -229,15 +202,26 @@ health_data = st.session_state.get("engine_health", {})
 for i, eng in enumerate(engines):
     # Determina o estado atual de ativação do engine (default: True)
     enabled = eng.get("enabled", True)
+    engine_type = eng.get("type", "simple")
+    is_forum = engine_type == "forum"
+
+    # Para engines de fórum, o estado depende do adapter (credenciais + sessão).
+    # Os engines simples continuam a depender do health-check HTTP via Tor.
+    adapter = None
+    adapter_configured = False
+    if is_forum and get_adapter is not None:
+        adapter = get_adapter(eng.get("adapter", ""))
+        adapter_configured = bool(adapter and adapter.is_configured())
 
     # Obtém os dados de saúde para este engine específico (pode ser None)
     health = health_data.get(eng["name"])
 
-    # Determina o ícone de estado a apresentar:
-    # - Se existem dados de saúde, o ícone reflete o resultado do teste (verde/vermelho)
-    # - Se não há dados de saúde, o ícone reflete apenas se está ativo (verde) ou
-    #   desativado (cinzento), sem informação de conectividade
-    if health:
+    # Determina o ícone de estado a apresentar.
+    # Para fóruns: 🔒 (autenticado) com cor consoante credenciais configuradas.
+    # Para simples: comportamento original baseado em health-check.
+    if is_forum:
+        icon = "🔒" if adapter_configured else "⚠️"
+    elif health:
         icon = "🟢" if health["status"] == "up" else "🔴"
     else:
         icon = "🟢" if enabled else "⚪"
@@ -246,12 +230,16 @@ for i, eng in enumerate(engines):
         # Layout em 4 colunas: [ícone | nome+saúde | URL | botões de ação]
         cols = st.columns([0.3, 2.5, 5, 2.5])
 
-        # Coluna 0: Ícone de estado (online/offline/desativado)
+        # Coluna 0: Ícone de estado (online/offline/desativado/auth)
         cols[0].markdown(icon)
 
-        # Coluna 1: Nome do engine com informação de saúde inline
+        # Coluna 1: Nome do engine com informação de estado inline
         name_text = f"**{eng['name']}**"
-        if health and health["status"] == "up":
+        if is_forum:
+            name_text += " `forum`"
+            if not adapter_configured:
+                name_text += " _missing .env credentials_"
+        elif health and health["status"] == "up":
             # Mostra a latência em milissegundos se o engine está online
             name_text += f" `{health['latency_ms']}ms`"
         elif health and health["status"] == "down":
@@ -285,10 +273,35 @@ for i, eng in enumerate(engines):
                 st.rerun()
 
             # Botão Eliminar: em vez de eliminar imediatamente, guarda o índice
-            # no session_state para mostrar um diálogo de confirmação
-            if btn_cols[2].button("Del", key=f"del_{i}", type="secondary"):
+            # no session_state para mostrar um diálogo de confirmação.
+            # Engines de fórum são builtins e não devem ser removidos via UI
+            # (o adapter está acoplado ao código).
+            if not is_forum and btn_cols[2].button("Del", key=f"del_{i}", type="secondary"):
                 st.session_state["confirm_delete"] = i
                 st.rerun()
+
+    # Botão "Test Login" para engines de fórum (autenticados).
+    # Invoca o adapter para fazer login real e mostra resultado inline.
+    if is_forum and adapter is not None:
+        login_cols = st.columns([0.3, 8, 2])
+        if adapter_configured:
+            if login_cols[2].button("Test Login", key=f"login_{i}"):
+                with st.spinner("A autenticar..."):
+                    ok = adapter.ensure_session()
+                if ok:
+                    login_cols[1].success(
+                        f"Autenticado em {eng['name']} (sessão activa)."
+                    )
+                else:
+                    login_cols[1].error(
+                        f"Falha de autenticação em {eng['name']}. "
+                        "Verifica credenciais no .env e conectividade Tor."
+                    )
+        else:
+            login_cols[1].caption(
+                "Define `DARKFORUMS_USERNAME` e `DARKFORUMS_PASSWORD` no `.env` "
+                "para activar este engine."
+            )
 
     # -----------------------------------------------------------------------
     # DIÁLOGO DE CONFIRMAÇÃO DE ELIMINAÇÃO
@@ -321,7 +334,15 @@ for i, eng in enumerate(engines):
         with st.form(key=f"edit_form_{i}"):
             # Campos pré-preenchidos com os valores atuais do engine
             new_name = st.text_input("Nome", value=eng["name"])
-            new_url = st.text_input("URL", value=eng["url"])
+            if is_forum:
+                # O URL de fóruns é informativo e definido pelo adapter;
+                # editá-lo aqui não tem efeito (engine_manager.update_engine
+                # ignora-o para type=forum). Apresentamos read-only.
+                st.text_input("URL", value=eng["url"], disabled=True,
+                              help="Endpoint definido pelo adapter — não editável.")
+                new_url = eng["url"]
+            else:
+                new_url = st.text_input("URL", value=eng["url"])
             new_enabled = st.checkbox("Ativo", value=enabled)
 
             col_save, col_cancel, _ = st.columns([1, 1, 6])
@@ -359,6 +380,8 @@ with st.expander("Legenda"):
 | 🟢 | Engine online / ativo |
 | 🔴 | Engine offline (teste falhou) |
 | ⚪ | Engine desativado (sem teste) |
+| 🔒 | Forum engine autenticado (credenciais configuradas) |
+| ⚠️ | Forum engine sem credenciais no `.env` |
 """)
 
 

@@ -24,6 +24,7 @@ import requests
 import random, re
 import json
 import os
+from urllib.parse import quote_plus
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
@@ -109,6 +110,23 @@ SEARCH_ENGINES = [
     {"name": "DarkwebDaily",    "url": "http://dailydwusclfsu7fzwydc5emidexnesmdlzqmz2dxnx5x4thl42vj4qd.onion/?q={query}",                        "default_enabled": False},
     {"name": "Stealth",         "url": "http://stealth5wfeiuvmtgd2s3m2nx2bb3ywdo2yiklof77xf6emkwjqo53yd.onion/?q={query}",                        "default_enabled": False},
     {"name": "Snow Search",     "url": "http://snowsrchzbc2xdkmgvimetleohpnnnscnsgwmvneizcb34ywwocahiyd.onion/?q={query}",                        "default_enabled": False},
+
+    # ---------------------------------------------------------------------------
+    # Fóruns autenticados (type=forum) — pesquisa via adapter dedicado
+    #
+    # Estes engines NÃO usam o contrato GET-com-{query}. O campo `url` é
+    # informativo (mostrado na UI); o pipeline despacha pela chave `adapter`
+    # para `forum_adapters.get_adapter(...)`, que gere login, cookies e
+    # parsing específicos ao layout do fórum. Permanecem desactivados por
+    # omissão e só ficam utilizáveis se as credenciais estiverem no .env.
+    # ---------------------------------------------------------------------------
+    {
+        "name": "DarkForums",
+        "url": "https://darkforums.st/search.php",
+        "type": "forum",
+        "adapter": "darkforums",
+        "default_enabled": False,
+    },
 ]
 
 # Lista plana de URLs extraída de SEARCH_ENGINES, mantida para
@@ -201,8 +219,12 @@ def fetch_search_results(endpoint, query, session=None):
                     ou lista vazia em caso de falha ou ausência de resultados.
     """
     # Substituição do placeholder {query} no template de URL do motor.
-    # Ex.: "http://ahmia.fi/search/?q={query}" → "http://ahmia.fi/search/?q=bitcoin"
-    url = endpoint.format(query=query)
+    # quote_plus codifica espaços como '+' e escapa caracteres reservados — o
+    # encoding fica isolado aqui em vez de ser aplicado pelo chamador, para que
+    # adapters (forum_adapters/) recebam a query original e possam fazer o
+    # encoding apropriado ao seu protocolo (form-urlencoded, multipart, etc.).
+    # Ex.: "http://ahmia.fi/search/?q={query}" + "leak forum" → ".../?q=leak+forum"
+    url = endpoint.format(query=quote_plus(query))
 
     # Seleccionar um User-Agent aleatório a cada pedido para evitar
     # bloqueios baseados em fingerprinting do browser.
@@ -278,8 +300,18 @@ def get_search_results(refined_query, max_workers=5):
     Retorna:
         list[dict]: lista deduplicada e filtrada de resultados.
     """
-    from engine_manager import get_active_engine_urls
-    active_urls = get_active_engine_urls()
+    from engine_manager import get_active_engines
+    active_engines = get_active_engines()
+
+    # Separar motores por tipo:
+    #   - "simple" (ou type ausente) → contrato GET com {query}, fluxo actual
+    #   - "forum"                    → adapter autenticado (forum_adapters/)
+    # Os fóruns têm um custo por pedido muito superior (login + CF challenge)
+    # e gerem a sua própria sessão, pelo que ficam fora do ThreadPool Tor.
+    simple_engines = [e for e in active_engines if e.get("type", "simple") == "simple"]
+    forum_engines = [e for e in active_engines if e.get("type") == "forum"]
+
+    active_urls = [e["url"] for e in simple_engines]
 
     # Extrair domínios .onion dos motores de pesquisa para excluir meta-resultados
     engine_domains = set()
@@ -290,15 +322,34 @@ def get_search_results(refined_query, max_workers=5):
 
     results = []
 
-    shared_session = get_tor_session()
+    shared_session = get_tor_session() if active_urls else None
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(fetch_search_results, endpoint, refined_query, shared_session)
-                   for endpoint in active_urls]
+    if active_urls:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(fetch_search_results, endpoint, refined_query, shared_session)
+                       for endpoint in active_urls]
 
-        for future in as_completed(futures):
-            result_urls = future.result()
-            results.extend(result_urls)
+            for future in as_completed(futures):
+                result_urls = future.result()
+                results.extend(result_urls)
+
+    # Despacho para forum adapters (sequencial — cada adapter gere o seu rate
+    # limit interno e o número de fóruns activos é tipicamente pequeno).
+    if forum_engines:
+        try:
+            from forum_adapters import get_adapter
+        except Exception:  # noqa: BLE001 — import falha não deve quebrar pipeline simples
+            get_adapter = None  # type: ignore[assignment]
+        if get_adapter is not None:
+            for engine in forum_engines:
+                adapter = get_adapter(engine.get("adapter", ""))
+                if adapter is None or not adapter.is_configured():
+                    continue
+                try:
+                    results.extend(adapter.search(refined_query))
+                except Exception:
+                    # Falhas de um fórum não devem partir o resto da pesquisa.
+                    continue
 
     # Deduplicação + exclusão de meta-resultados (search engine pages)
     seen_links = set()

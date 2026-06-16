@@ -1,6 +1,7 @@
 bs4
 pysocks
 requests
+curl_cffi>=0.7.0
 streamlit
 python-dotenv
 langchain-ollama

@@ -99,6 +99,8 @@ def check_tor_proxy():
 def check_llm_health(model_choice):
     """
     Test actual connectivity to the selected LLM by sending a minimal prompt.
+
+    O projecto suporta apenas Ollama local. `provider` é sempre "Ollama (local)".
     Returns {status, latency_ms, error, provider}.
     """
     config = resolve_model_config(model_choice)
@@ -110,33 +112,14 @@ def check_llm_health(model_choice):
             "provider": "unknown",
         }
 
-    # Determine provider name for display
-    class_name = getattr(config["class"], "__name__", str(config["class"]))
-    ctor = config.get("constructor_params", {}) or {}
-    if "ChatAnthropic" in class_name:
-        provider = "Anthropic"
-    elif "ChatGoogleGenerativeAI" in class_name:
-        provider = "Google Gemini"
-    elif "ChatOllama" in class_name:
-        provider = "Ollama (local)"
-    elif "ChatOpenAI" in class_name:
-        base_url = (ctor.get("base_url") or "").lower()
-        if "openrouter" in base_url:
-            provider = "OpenRouter"
-        elif "llama" in base_url or "localhost" in base_url or "127.0.0.1" in base_url:
-            provider = "llama.cpp (local)"
-        else:
-            provider = "OpenAI"
-    else:
-        provider = class_name
+    provider = "Ollama (local)"
 
+    start = time.monotonic()
     try:
-        start = time.time()
         llm = get_llm(model_choice)
-        # Send a tiny prompt — cheapest possible API call
+        # Pedido mínimo — chamada mais barata possível
         response = llm.invoke("Say OK")
-        latency_ms = round((time.time() - start) * 1000)
-        # Extract text from response
+        latency_ms = round((time.monotonic() - start) * 1000)
         text = getattr(response, "content", str(response))
         if text and len(text.strip()) > 0:
             return {
@@ -145,15 +128,14 @@ def check_llm_health(model_choice):
                 "error": None,
                 "provider": provider,
             }
-        else:
-            return {
-                "status": "down",
-                "latency_ms": latency_ms,
-                "error": "Empty response from API",
-                "provider": provider,
-            }
+        return {
+            "status": "down",
+            "latency_ms": latency_ms,
+            "error": "Empty response from API",
+            "provider": provider,
+        }
     except Exception as e:
-        latency_ms = round((time.time() - start) * 1000)
+        latency_ms = round((time.monotonic() - start) * 1000)
         return {
             "status": "down",
             "latency_ms": latency_ms,
@@ -193,10 +175,18 @@ def _ping_single_engine(engine):
 
 def check_search_engines(max_workers=8):
     """
-    Concurrently ping all active search engines via Tor.
-    Returns a list of per-engine status dicts.
+    Concurrently ping all active SIMPLE search engines via Tor.
+
+    Engines de fórum autenticado (type=forum) são excluídos porque o seu
+    endpoint de pesquisa exige POST de login — o ping HTTP genérico aqui
+    devolveria sempre redirect para a página de login (status != 200) e
+    marcaria estes engines como "down" incorrectamente. A verificação de
+    sessão autenticada é feita na página Search Engines via "Test Login".
     """
-    engines = get_active_engines()
+    engines = [
+        e for e in get_active_engines()
+        if e.get("type", "simple") == "simple"
+    ]
     return check_engines_list(engines, max_workers=max_workers)
 
 
