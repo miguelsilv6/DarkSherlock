@@ -33,6 +33,10 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from llm_utils import _common_llm_params, resolve_model_config, get_model_choices
 
+# Logger por módulo — consistente com scrape.py, search.py e
+# forum_adapters/darkforums.py. Evita uso de `logging.warning` (root logger).
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Expressões regulares pré-compiladas ao nível do módulo.
 #
@@ -245,7 +249,7 @@ def filter_results(llm, query, results):
     except Exception as e:
         # Se o payload for demasiado grande (rate limit, context overflow),
         # tenta novamente com versão truncada (sem links, títulos a 30 chars).
-        logging.warning("Filter LLM call falhou (%s) — a retry com payload truncado.", e)
+        logger.warning("Filter LLM call falhou (%s) — a retry com payload truncado.", e)
         final_str = _generate_final_string(results, truncate=True)
         try:
             result_indices = chain.invoke({"query": query, "results": final_str})
@@ -253,7 +257,7 @@ def filter_results(llm, query, results):
             # Se o retry também falhar, devolve top-20 sem ranking LLM em vez
             # de partir o pipeline inteiro — o filtro de relevância pós-scrape
             # ainda actua a jusante, pelo que conteúdo irrelevante é descartado.
-            logging.warning(
+            logger.warning(
                 "Filter retry também falhou (%s) — fallback para top-%d sem ranking.",
                 e2, min(len(results), 20),
             )
@@ -261,7 +265,7 @@ def filter_results(llm, query, results):
 
     # Se o LLM indicou que nenhum resultado é relevante
     if "NONE" in result_indices.upper():
-        logging.info("LLM filter returned NONE — no relevant results found.")
+        logger.info("LLM filter returned NONE — no relevant results found.")
         return []
 
     # Select top_k results using original (non-truncated) results
@@ -281,7 +285,7 @@ def filter_results(llm, query, results):
     ]
 
     if not parsed_indices:
-        logging.warning(
+        logger.warning(
             "Unable to interpret LLM result selection ('%s'). "
             "Defaulting to the top %s results.",
             result_indices,
@@ -502,12 +506,12 @@ def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int
 
     # Se a filtragem removeu TUDO, devolve o original para não perder toda a análise
     if relevant:
-        logging.info(
+        logger.info(
             "Post-scrape relevance filter: %d/%d sources kept (query: %s)",
             len(relevant), len(scraped), query[:60],
         )
     else:
-        logging.warning(
+        logger.warning(
             "Post-scrape relevance filter removed ALL %d sources — keeping originals (query: %s)",
             len(scraped), query[:60],
         )
