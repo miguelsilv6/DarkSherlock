@@ -115,24 +115,38 @@ sudo apt install tor
 sudo systemctl start tor
 ```
 
-### Python (Development)
+### Quick start / update (recommended)
+
+`update.sh` puts everything in one command: pulls the latest code, creates/updates
+the virtualenv, installs dependencies, creates `.env`, warns if Tor is down, and
+launches the app. Ideal for **running locally after a PR is merged**.
+
+```bash
+./update.sh                  # update main + install + run
+./update.sh <branch>         # use a specific branch (e.g. to test a PR)
+./update.sh main --no-run    # update + install only (don't launch)
+```
+
+The built-in lightweight LLM is downloaded automatically on the first
+investigation — no configuration required.
+
+### Python (manual)
 
 ```bash
 # Clone the repository
 git clone https://github.com/miguelsilv6/DarkSherlock.git
 cd DarkSherlock
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/macOS
-# venv\Scripts\activate   # Windows
+# Create virtual environment (Python 3.10+)
+python -m venv .venv
+source .venv/bin/activate  # Linux/macOS
+# .venv\Scripts\activate    # Windows
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Configure environment
+# (Optional) configure environment — the app works without it
 cp .env.example .env
-# Edit .env with your API keys (see Configuration section)
 
 # Run
 streamlit run Home.py
@@ -493,6 +507,7 @@ DarkSherlock/
 ├── config.py                  # Environment variable loading
 ├── Dockerfile                 # Docker image with Tor included
 ├── entrypoint.sh              # Docker entrypoint (starts Tor + Streamlit)
+├── update.sh                  # One-command local update + install + run
 ├── requirements.txt           # Python dependencies
 ├── .env.example               # Template for environment variables
 ├── models/                    # Cache of downloaded GGUF models (gitignored)
