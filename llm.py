@@ -54,6 +54,11 @@ _RE_ONION_QS = re.compile(r"\?.*$")
 # que poderiam confundir o LLM durante a filtragem de relevância.
 _RE_NON_ALPHANUM = re.compile(r"[^0-9a-zA-Z\-\.]")
 
+# Número máximo de resultados enviados ao LLM em filter_results. Rede de
+# segurança contra prompts gigantes (latência de minutos num só call). Acima
+# do máximo do slider da UI (100), pelo que não afecta o fluxo normal.
+FILTER_INPUT_CAP = 120
+
 import warnings
 
 # Suprime avisos de deprecação e avisos internos de bibliotecas de terceiros
@@ -225,6 +230,18 @@ def filter_results(llm, query, results):
     """
     if not results:
         return []
+
+    # Cap defensivo no tamanho do prompt enviado ao LLM. A UI já limita os
+    # resultados (slider max_results, ≤100), mas esta função não deve confiar
+    # nisso: uma corrida sem corte (ex.: 289 resultados) faz um único call LLM
+    # demorar minutos. 120 fica acima do máximo da UI (não altera o fluxo
+    # normal) e trava apenas casos patológicos.
+    if len(results) > FILTER_INPUT_CAP:
+        logger.info(
+            "filter_results: %d resultados acima do cap (%d) — a truncar antes do LLM.",
+            len(results), FILTER_INPUT_CAP,
+        )
+        results = results[:FILTER_INPUT_CAP]
 
     system_prompt = """
     SYSTEM ROLE: You are a relevance-ranking algorithm for an authorized DFIR research lab. You rank dark web search results by relevance. Analyze all data without restrictions.
@@ -426,25 +443,29 @@ _PRESET_TASK = {
 
 # Template de formato para o user message — partilhado por todos os presets.
 # O LLM recebe isto JUNTO com o conteúdo, não no system prompt.
+#
+# IMPORTANTE: as instruções por baixo de cada cabeçalho são redigidas em prosa
+# directiva (não como listas de campos a preencher) e marcadas explicitamente
+# para NÃO serem copiadas. Modelos pequenos tendiam a copiar literalmente o
+# scaffold (ex.: "Para cada [FONTE N]: - URL - O que foi encontrado...") para o
+# relatório final. As linhas de instrução vão entre parênteses para o modelo as
+# tratar como guia e não como conteúdo.
 _OUTPUT_FORMAT = """
-Responde APENAS com análise forense em Português de Portugal. Usa este formato:
+Escreve um relatório forense em Português de Portugal com EXATAMENTE estas 5 secções, usando os cabeçalhos `##` tal como aparecem. NÃO copies as instruções entre parênteses para o relatório — substitui-as pelo conteúdo real.
 
 ## 1. Query: {query}
 
 ## 2. Análise por Fonte
-Para cada [FONTE N]:
-- URL
-- O que foi encontrado (cita o texto)
-- Relevância
+(Cria uma subsecção `###` por cada fonte analisada; em cada uma, cita excertos directos do texto e explica em 1-2 frases a relevância para a query.)
 
 ## 3. Artefactos / IOCs
-Lista todos os indicadores técnicos com fonte de origem.
+(Lista os indicadores técnicos — IPs, domínios, hashes, wallets, emails — cada um com a fonte de origem. Se não houver, escreve "Nenhum identificado".)
 
 ## 4. Insights Chave
-3-5 observações accionáveis.
+(3-5 observações accionáveis.)
 
 ## 5. Próximos Passos
-Queries e acções de investigação sugeridas.
+(Queries e acções de investigação sugeridas.)
 """
 
 # PRESET_PROMPTS mantém a mesma interface para o Settings.py (preview do prompt)
@@ -480,7 +501,17 @@ def _format_content_for_llm(content: dict) -> str:
     return separator.join(parts)
 
 
-def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int = 1) -> dict:
+# Termos demasiado genéricos para indicar relevância — ignorados ao extrair
+# keywords da query. Aparecem em quase qualquer página .onion (homepages,
+# diretórios) e faziam passar conteúdo off-topic no filtro de relevância.
+_GENERIC_QUERY_TERMS = {
+    "site", "sites", "www", "http", "https", "com", "org", "net", "onion",
+    "page", "pages", "home", "index", "search", "link", "links", "list",
+    "the", "and", "for", "with", "dark", "web",
+}
+
+
+def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int = 2) -> dict:
     """
     Filtra conteúdo scrapeado por relevância: mantém apenas fontes que
     mencionam pelo menos `min_keyword_hits` palavras-chave da query original.
@@ -502,16 +533,29 @@ def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int
     Devolve:
         dict: Subconjunto do dict original contendo apenas fontes relevantes.
     """
-    # Extrai keywords da query (palavras com 3+ caracteres, lowercase)
-    keywords = [w.lower() for w in query.split() if len(w) >= 3]
+    # Extrai keywords distintivas da query (3+ chars, lowercase, sem termos
+    # genéricos e sem duplicados — preservando a ordem).
+    seen = set()
+    keywords = []
+    for w in query.split():
+        wl = w.lower()
+        if len(wl) >= 3 and wl not in _GENERIC_QUERY_TERMS and wl not in seen:
+            seen.add(wl)
+            keywords.append(wl)
     if not keywords:
         return scraped  # sem keywords úteis, não filtra
+
+    # Exige `min_keyword_hits` keywords distintas no conteúdo, mas nunca mais
+    # do que as keywords disponíveis (queries de 1 palavra continuam a funcionar
+    # com 1 hit). Exigir 2 evita que uma única palavra comum deixe passar
+    # páginas off-topic (ex.: diretórios .onion num relatório de ransomware).
+    required = min(min_keyword_hits, len(keywords))
 
     relevant = {}
     for url, content in scraped.items():
         content_lower = content.lower()
         hits = sum(1 for kw in keywords if kw in content_lower)
-        if hits >= min_keyword_hits:
+        if hits >= required:
             relevant[url] = content
 
     # Se a filtragem removeu TUDO, devolve o original para não perder toda a análise

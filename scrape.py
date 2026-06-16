@@ -84,10 +84,13 @@ def get_tor_session():
         requests.Session: sessão configurada com proxy Tor e política de retry.
     """
     session = requests.Session()
+    # 1 retry (era 3): páginas .onion mortas/offline são a falha dominante e
+    # repetir não as recupera — só multiplica a latência por host morto. 1 retry
+    # cobre falhas transitórias reais sem penalizar o caso comum.
     retry = Retry(
-        total=3,           # Número máximo de tentativas globais por pedido
-        read=3,            # Tentativas adicionais em caso de erro de leitura
-        connect=3,         # Tentativas adicionais em caso de falha de ligação
+        total=1,           # Número máximo de tentativas globais por pedido
+        read=1,            # Tentativas adicionais em caso de erro de leitura
+        connect=1,         # Tentativas adicionais em caso de falha de ligação
         backoff_factor=0.3,            # Fator de espera exponencial entre tentativas
         status_forcelist=[500, 502, 503, 504]  # Códigos HTTP que ativam o reenvio
     )
@@ -213,16 +216,15 @@ def scrape_single(url_data, session=None, rotate=False, rotate_interval=5, contr
             # o overhead de ~300-500 ms de estabelecimento de circuito Tor
             # que ocorreria se cada worker criasse a sua própria sessão.
             tor_session = session if session is not None else get_tor_session()
-            # O timeout para pedidos Tor é mais alto (45 s) do que para a
-            # clearweb porque a rede Tor introduz latência significativa:
-            # cada pedido percorre pelo menos 3 nós (circuito onion routing),
-            # e serviços ocultos têm frequentemente recursos limitados.
-            response = tor_session.get(url, headers=headers, timeout=45)
+            # Timeout (connect, read): connect curto (15s) para descartar
+            # rapidamente serviços ocultos offline (muito frequentes), read
+            # generoso (45s) para a latência do onion routing em hosts vivos.
+            # Antes era um único 45s — esperava 45s só para falhar num host morto.
+            response = tor_session.get(url, headers=headers, timeout=(15, 45))
         else:
             # Alternativa para URLs da clearweb, caso a ferramenta seja
-            # utilizada fora do contexto dark web. O timeout é menor (30 s)
-            # pois a latência da clearweb é substancialmente mais baixa.
-            response = requests.get(url, headers=headers, timeout=30)
+            # utilizada fora do contexto dark web. connect 10s / read 30s.
+            response = requests.get(url, headers=headers, timeout=(10, 30))
 
         if response.status_code == 200:
             # Analisa o HTML da resposta com BeautifulSoup usando o parser
