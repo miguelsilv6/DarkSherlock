@@ -161,13 +161,19 @@ def get_tor_session():
     session = requests.Session()
 
     # Configuração de retenativas automáticas:
-    #   total/read/connect=3  → até 3 tentativas por pedido
-    #   backoff_factor=0.5    → espera 0.5s, 1s, 2s entre tentativas
+    #   total/read/connect=1  → no máximo 1 retry por pedido
+    #   backoff_factor=0.5    → espera 0.5s antes do retry
     #   status_forcelist      → repetir apenas em erros de servidor (5xx)
+    #
+    # Porquê só 1 retry (era 3): a esmagadora maioria das falhas em motores
+    # .onion é "host unreachable" / serviço offline — repetir 3× não recupera
+    # nada e multiplica a latência por hosts mortos (com timeout de connect,
+    # cada tentativa custa segundos). 1 retry cobre falhas transitórias reais
+    # sem penalizar o caso comum (engine em baixo).
     retry = Retry(
-        total=3,
-        read=3,
-        connect=3,
+        total=1,
+        read=1,
+        connect=1,
         backoff_factor=0.5,
         status_forcelist=[500, 502, 503, 504]
     )
@@ -233,9 +239,12 @@ def fetch_search_results(endpoint, query, session=None):
     session = session if session is not None else get_tor_session()
 
     try:
-        # Timeout de 40 segundos — valor elevado justificado pela alta latência
-        # inerente à rede Tor (múltiplos saltos criptográficos entre nós).
-        response = session.get(url, headers=headers, timeout=40)
+        # Timeout (connect, read): connect curto (15s) para falhar rápido em
+        # hosts .onion inacessíveis (muito comuns), read generoso (40s) para a
+        # alta latência da rede Tor em hosts que respondem. Antes era um único
+        # 40s, o que fazia esperar 40s só para descobrir que um host estava
+        # morto.
+        response = session.get(url, headers=headers, timeout=(15, 40))
 
         if response.status_code == 200:
             # Usar BeautifulSoup para parsing tolerante a HTML malformado,
