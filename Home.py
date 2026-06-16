@@ -963,13 +963,21 @@ if run_button and query:
         stream_handler = BufferedStreamingHandler(ui_callback=ui_emit)
         llm.callbacks = [stream_handler]
 
-        # Invoca a geração do relatório. O resultado da função não é usado
-        # directamente porque o texto já foi acumulado em `streamed_summary`
-        # pelo callback `ui_emit` durante o streaming.
-        _ = generate_summary(
+        # Invoca a geração do relatório. O texto é normalmente acumulado em
+        # `streamed_summary` pelo callback `ui_emit` durante o streaming — MAS
+        # nem todos os backends emitem tokens durante invoke (e.g., alguns
+        # modelos llama.cpp). Por isso capturamos também o valor de retorno e
+        # usamo-lo como fonte autoritativa: sem isto, um backend sem streaming
+        # produziria um relatório VAZIO (streamed_summary == "").
+        _result_text = generate_summary(
             llm, query, meaningful_scraped,
             preset=selected_preset, custom_instructions=custom_instructions,
         )
+        # Reconciliação: prefere o texto transmitido (já renderizado live);
+        # se o streaming não disparou, usa o retorno e renderiza-o agora.
+        if not st.session_state.streamed_summary and _result_text:
+            st.session_state.streamed_summary = _result_text
+            summary_slot.markdown(_result_text)
         elapsed = round((time.time() - t0) * 1000)
         status.update(
             label=f"**Stage 6/6** — Summary generated ({_fmt_ms(elapsed)})",

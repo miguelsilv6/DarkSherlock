@@ -418,13 +418,19 @@ if run_button and query:
         t0 = time.time()
         stream_handler = BufferedStreamingHandler(ui_callback=ui_emit)
         llm.callbacks = [stream_handler]
-        _ = generate_summary(
+        # Captura o retorno como fonte autoritativa: backends sem streaming
+        # (e.g. alguns llama.cpp) não disparam o callback, o que deixaria
+        # streamed_summary vazio e produziria um relatório em branco.
+        _result_text = generate_summary(
             llm,
             query,
             meaningful_scraped,
             preset=selected_preset,
             custom_instructions=custom_instructions,
         )
+        if not st.session_state.streamed_summary and _result_text:
+            st.session_state.streamed_summary = _result_text
+            summary_slot.markdown(_result_text)
         elapsed = round((time.time() - t0) * 1000)
         status.update(
             label=f"**Stage 6/6** — Summary generated ({_fmt_ms(elapsed)})",

@@ -1,16 +1,26 @@
 """
 llm_utils.py — Utilitários para gestão e instanciação de modelos de linguagem (LLMs).
 
-O DarkSherlock utiliza exclusivamente modelos locais via Ollama. Os modelos
-disponíveis são descobertos dinamicamente através da API do servidor Ollama.
+O DarkSherlock suporta dois backends de LLM, por ordem de prioridade:
+
+  1. Modelos LEVES EMBUTIDOS (in-process, via llama.cpp) — ver local_models.py.
+     Correm em qualquer máquina, sem servidor, descarregados na 1ª utilização.
+     Garantem que a app é funcional out-of-the-box, mesmo sem Ollama.
+
+  2. Modelos locais via Ollama (opcional) — descobertos dinamicamente pela
+     API do servidor Ollama, se este estiver a correr.
 """
 
+import logging
 import requests
 from urllib.parse import urljoin
 from langchain_ollama import ChatOllama
 from typing import Callable, Optional, List
 from langchain_core.callbacks.base import BaseCallbackHandler
 from config import OLLAMA_BASE_URL
+import local_models
+
+logger = logging.getLogger(__name__)
 
 
 class BufferedStreamingHandler(BaseCallbackHandler):
@@ -91,19 +101,35 @@ def fetch_ollama_models() -> List[str]:
 
 def get_model_choices() -> List[str]:
     """
-    Devolve a lista de modelos Ollama disponíveis localmente, ordenada alfabeticamente.
+    Devolve a lista de modelos disponíveis para selecção na UI.
+
+    Ordem: modelos EMBUTIDOS leves primeiro (sempre disponíveis se
+    llama-cpp-python estiver instalado), depois os modelos Ollama
+    descobertos no servidor local. Os embutidos vêm primeiro para que o
+    índice 0 (default da UI) seja sempre um modelo funcional sem setup.
     """
-    models = fetch_ollama_models()
-    return sorted(models, key=_normalize_model_name)
+    builtin = local_models.list_builtin_labels()
+    ollama = sorted(fetch_ollama_models(), key=_normalize_model_name)
+    return builtin + ollama
 
 
 def resolve_model_config(model_choice: str):
     """
-    Dado o nome de um modelo Ollama, devolve a configuração para instanciar o LLM.
-    Retorna None se o modelo não for encontrado.
-    """
-    model_choice_lower = _normalize_model_name(model_choice)
+    Dado o nome de um modelo, devolve a configuração para instanciar o LLM.
 
+    Resolve primeiro contra os modelos embutidos (llama.cpp in-process);
+    em fallback, contra os modelos Ollama. Para modelos embutidos, isto
+    desencadeia o download do GGUF na primeira utilização (ver local_models).
+
+    Retorna None se o modelo não for reconhecido em nenhum backend.
+    """
+    if model_choice and local_models.is_builtin(model_choice):
+        return {
+            "class": local_models.get_chat_llamacpp_class(),
+            "constructor_params": local_models.build_constructor_params(model_choice),
+        }
+
+    model_choice_lower = _normalize_model_name(model_choice or "")
     for ollama_model in fetch_ollama_models():
         if _normalize_model_name(ollama_model) == model_choice_lower:
             return {

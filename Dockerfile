@@ -10,7 +10,9 @@ FROM python:3.10-slim AS builder
 RUN DEBIAN_FRONTEND="noninteractive" apt-get update && \
     apt-get install -y --no-install-recommends \
       build-essential \
+      cmake \
       curl \
+      git \
       libssl-dev \
       libffi-dev \
       libcurl4-openssl-dev && \
@@ -19,6 +21,8 @@ RUN DEBIAN_FRONTEND="noninteractive" apt-get update && \
 WORKDIR /app
 
 # Instala dependências num prefix isolado que será copiado para a imagem final.
+# llama-cpp-python normalmente resolve uma wheel CPU pré-compilada; cmake/git
+# acima são a rede de segurança caso seja preciso compilar a partir do source.
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --prefix=/install --no-cache-dir -r requirements.txt
@@ -46,6 +50,12 @@ WORKDIR /app
 COPY . .
 
 RUN chmod +x /app/entrypoint.sh
+
+# Pasta de cache dos GGUF embutidos. Declarada como volume para que o modelo
+# (centenas de MB) persista entre recriações do contentor e não seja
+# re-descarregado a cada arranque.
+RUN mkdir -p /app/models
+VOLUME ["/app/models"]
 
 EXPOSE 8501
 

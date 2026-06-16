@@ -24,7 +24,7 @@ st.caption("DarkSherlock — AI-Powered Dark Web OSINT Tool")
 st.header("Quick Start")
 st.markdown("""
 1. **Garante que o Tor esta a correr** na porta 9050 (`brew services start tor` no macOS)
-2. **Seleciona um modelo LLM** na sidebar (ex: `llama3.2:latest` para uso local via Ollama)
+2. **Seleciona um modelo LLM** em Settings (default: modelo leve embutido, sem setup)
 3. **Escolhe o dominio de investigacao** no Prompt Settings (Threat Intel, Ransomware, PII, Corporate)
 4. **Escreve uma query** na barra de pesquisa (ex: `Akira ransomware leak site`)
 5. **Clica em Run** — o pipeline de 6 etapas executa automaticamente
@@ -45,10 +45,10 @@ Cada etapa mostra o estado (running/complete/error), detalhes expandiveis e temp
 
 stages = [
     ("Stage 1 — Load LLM", """
-Carrega o modelo de linguagem selecionado na sidebar.
+Carrega o modelo de linguagem selecionado em Settings.
 
-- **Ollama (local):** O modelo corre na tua maquina — sem custos, dados privados
-- **Cloud (OpenAI, Claude, Gemini, OpenRouter):** Chamada API — mais rapido, melhor qualidade
+- **Embutido (llama.cpp):** corre in-process, sem servidor — dados privados, zero custo. Descarregado na 1ª utilizacao.
+- **Ollama (local, opcional):** modelos maiores servidos por um Ollama em execucao
 - O modelo e reutilizado para as etapas 2, 4 e 6
 """),
     ("Stage 2 — Refine Query", """
@@ -182,15 +182,17 @@ st.header("Settings (Sidebar)")
 
 st.subheader("Select LLM Model")
 st.markdown("""
-Escolhe o modelo de linguagem para processar as queries. O DarkSherlock utiliza
-exclusivamente modelos locais via **Ollama**:
+Escolhe o modelo de linguagem para processar as queries. Dois backends:
 
-| Provider | Modelos | Requisito |
-|----------|---------|-----------|
-| **Ollama** (local) | Qualquer modelo instalado (`ollama pull <nome>`) | Ollama em execucao |
+| Backend | Modelos | Requisito |
+|---------|---------|-----------|
+| **Embutido (llama.cpp)** | Qwen2.5-0.5B / 1.5B, Llama-3.2-1B (GGUF leves) | Nenhum — corre in-process, descarregado na 1ª utilizacao |
+| **Ollama** (opcional) | Qualquer modelo instalado (`ollama pull <nome>`) | Ollama em execucao |
 
-Os modelos sao automaticamente detetados via API do Ollama.
-Para instalar um novo modelo: `ollama pull <nome>` (ex: `ollama pull llama3.1`).
+O modelo embutido e o **default** e torna a app funcional sem qualquer setup —
+corre em qualquer maquina. Modelos de 0.5-1.5B sao rapidos e portateis; para
+analises mais profundas, instala Ollama e puxa um modelo maior (aparece
+automaticamente na lista).
 """)
 
 st.subheader("Scraping Threads")

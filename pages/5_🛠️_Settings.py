@@ -44,22 +44,30 @@ st.caption("Configurações globais do pipeline — persistidas na sessão actua
 st.divider()
 st.header("LLM Model")
 
+import local_models
+
 model_options = get_model_choices()
 
-default_model_index = (
-    next(
-        (idx for idx, name in enumerate(model_options) if "dolphin" in name.lower()),
-        0,
-    )
-    if model_options
-    else 0
-)
+# Default: o modelo embutido por omissão (corre out-of-the-box), senão dolphin
+# se existir em Ollama, senão o primeiro da lista.
+def _default_model_index(options):
+    if not options:
+        return 0
+    for idx, name in enumerate(options):
+        if name == local_models.DEFAULT_BUILTIN_MODEL:
+            return idx
+    for idx, name in enumerate(options):
+        if "dolphin" in name.lower():
+            return idx
+    return 0
+
+default_model_index = _default_model_index(model_options)
 
 if not model_options:
     st.error(
         "Nenhum modelo LLM disponível.\n\n"
-        "Configura pelo menos uma API key no ficheiro `.env` e reinicia o DarkSherlock.\n\n"
-        "Consulta a secção **Provider Configuration** abaixo."
+        "Instala as dependências (`pip install -r requirements.txt`) para activar "
+        "o modelo leve embutido, ou arranca um servidor Ollama com um modelo puxado."
     )
 else:
     st.selectbox(
@@ -67,9 +75,20 @@ else:
         model_options,
         index=default_model_index,
         key="model_select",
-        help="Modelo utilizado em todas as etapas do pipeline: refinamento, filtragem e geração de relatório.",
+        help="Modelo usado em todas as etapas: refinamento, filtragem e geração de relatório.",
     )
-    st.caption("Modelos Ollama são detectados automaticamente via API local.")
+    _selected = st.session_state.get("model_select", model_options[default_model_index])
+    if local_models.is_builtin(_selected):
+        spec = local_models.BUILTIN_MODELS[_selected]
+        if local_models.is_downloaded(_selected):
+            st.caption(f"Modelo embutido (llama.cpp) · {spec['size_label']} · já descarregado. {spec['desc']}")
+        else:
+            st.caption(
+                f"Modelo embutido (llama.cpp) · {spec['size_label']} · "
+                f"descarregado automaticamente na 1ª investigação. {spec['desc']}"
+            )
+    else:
+        st.caption("Modelo Ollama detectado via API local.")
 
 # ---------------------------------------------------------------------------
 # Pipeline Settings
@@ -160,12 +179,26 @@ st.text_area(
 # ---------------------------------------------------------------------------
 st.divider()
 st.header("Provider Configuration")
-st.caption("Estado do servidor Ollama local configurado no `.env`")
+st.caption("Backends de LLM disponíveis")
 
-if OLLAMA_BASE_URL:
-    st.success(f"**Ollama** — {OLLAMA_BASE_URL}", icon="✅")
+# Modelo leve embutido (in-process) — funciona sem qualquer servidor.
+if local_models.is_available():
+    st.success(
+        "**Modelo embutido (llama.cpp)** — disponível, corre in-process sem servidor",
+        icon="✅",
+    )
 else:
-    st.warning("**Ollama** — `OLLAMA_BASE_URL` não definido no `.env`", icon="⚠️")
+    st.warning(
+        "**Modelo embutido (llama.cpp)** — indisponível. "
+        "Instala `llama-cpp-python` (`pip install -r requirements.txt`).",
+        icon="⚠️",
+    )
+
+# Ollama (opcional)
+if OLLAMA_BASE_URL:
+    st.info(f"**Ollama** (opcional) — {OLLAMA_BASE_URL}", icon="ℹ️")
+else:
+    st.info("**Ollama** (opcional) — `OLLAMA_BASE_URL` não definido", icon="ℹ️")
 
 # ---------------------------------------------------------------------------
 # Health Checks

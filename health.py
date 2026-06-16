@@ -7,7 +7,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from search import get_tor_session, USER_AGENTS
 from engine_manager import get_active_engines
 from llm import get_llm
-from llm_utils import resolve_model_config
 
 
 def rotate_tor_circuit(control_port: int = 9051, password: str = None) -> dict:
@@ -100,22 +99,34 @@ def check_llm_health(model_choice):
     """
     Test actual connectivity to the selected LLM by sending a minimal prompt.
 
-    O projecto suporta apenas Ollama local. `provider` é sempre "Ollama (local)".
+    Suporta dois backends: modelo leve embutido (llama.cpp in-process) e
+    Ollama local.
     Returns {status, latency_ms, error, provider}.
     """
-    config = resolve_model_config(model_choice)
-    if config is None:
+    import local_models
+
+    provider = (
+        "llama.cpp (embutido)"
+        if local_models.is_builtin(model_choice)
+        else "Ollama (local)"
+    )
+
+    # Não desencadear o download (400MB-1.1GB) num health-check: bloquearia a
+    # thread da UI sem progresso. Se o modelo embutido ainda não estiver em
+    # cache, reporta-o — o download acontece na 1ª investigação (com spinner).
+    if local_models.is_builtin(model_choice) and not local_models.is_downloaded(model_choice):
         return {
             "status": "error",
             "latency_ms": None,
-            "error": f"Unknown model: {model_choice}",
-            "provider": "unknown",
+            "error": "Modelo embutido ainda não descarregado. Será obtido automaticamente na primeira investigação.",
+            "provider": provider,
         }
-
-    provider = "Ollama (local)"
 
     start = time.monotonic()
     try:
+        # get_llm resolve o modelo e instancia-o (built-in já em cache neste
+        # ponto). Levanta ValueError se desconhecido; tudo capturado pelo
+        # except abaixo para degradar graciosamente.
         llm = get_llm(model_choice)
         # Pedido mínimo — chamada mais barata possível
         response = llm.invoke("Say OK")

@@ -100,6 +100,16 @@ def get_llm(model_choice):
     # específicos deste modelo. Os específicos têm precedência em conflito.
     all_params = {**_common_llm_params, **model_specific_params}
 
+    # Filtra os parâmetros pelos campos efectivamente aceites pela classe LLM.
+    # Backends diferentes (ChatOllama vs ChatLlamaCpp) aceitam conjuntos de
+    # kwargs distintos; sem este filtro, passar um kwarg desconhecido (e.g.
+    # `streaming` a um backend que não o declara) levantaria TypeError na
+    # instanciação. Suporta pydantic v2 (model_fields) e v1 (__fields__).
+    fields = getattr(llm_class, "model_fields", None) or getattr(llm_class, "__fields__", {})
+    if fields:
+        accepted = set(fields.keys())
+        all_params = {k: v for k, v in all_params.items() if k in accepted}
+
     # Create the LLM instance using the gathered parameters
     llm_instance = llm_class(**all_params)
 

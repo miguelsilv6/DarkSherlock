@@ -24,7 +24,7 @@
 
 - **6-Stage Investigation Pipeline** — Automated workflow: LLM load → query refinement → multi-engine Tor search → LLM relevance filtering → content scraping → intelligence report generation
 - **Per-Source Analysis** — The LLM analyzes each scraped page individually, citing direct quotes and explaining relevance, rather than producing a generic summary
-- **Ollama-Powered LLM** — modelos locais via Ollama (Llama, Mistral, Dolphin, etc.) detectados automaticamente do servidor local
+- **Built-in Lightweight LLM** — modelo GGUF leve embutido (llama.cpp in-process), descarregado automaticamente na 1ª utilização. Corre em qualquer máquina sem servidor; Ollama é opcional para modelos maiores
 - **34+ Dark Web Search Engines** — 16 built-in engines + 18 from [fastfire/deepdarkCTI](https://github.com/fastfire/deepdarkCTI), all configurable and testable via the UI
 - **Forensic PDF Reports** — Download reports with audit ID, UTC timestamps, SHA-256 integrity hashes (per-page and global), source list, and full analysis
 - **Real-Time Streaming** — Intelligence reports are generated token-by-token with live display
@@ -115,24 +115,38 @@ sudo apt install tor
 sudo systemctl start tor
 ```
 
-### Python (Development)
+### Quick start / update (recommended)
+
+`update.sh` puts everything in one command: pulls the latest code, creates/updates
+the virtualenv, installs dependencies, creates `.env`, warns if Tor is down, and
+launches the app. Ideal for **running locally after a PR is merged**.
+
+```bash
+./update.sh                  # update main + install + run
+./update.sh <branch>         # use a specific branch (e.g. to test a PR)
+./update.sh main --no-run    # update + install only (don't launch)
+```
+
+The built-in lightweight LLM is downloaded automatically on the first
+investigation — no configuration required.
+
+### Python (manual)
 
 ```bash
 # Clone the repository
 git clone https://github.com/miguelsilv6/DarkSherlock.git
 cd DarkSherlock
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/macOS
-# venv\Scripts\activate   # Windows
+# Create virtual environment (Python 3.10+)
+python -m venv .venv
+source .venv/bin/activate  # Linux/macOS
+# .venv\Scripts\activate    # Windows
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Configure environment
+# (Optional) configure environment — the app works without it
 cp .env.example .env
-# Edit .env with your API keys (see Configuration section)
 
 # Run
 streamlit run Home.py
@@ -373,8 +387,17 @@ Repete o Método 2 com a nova imagem e recria o container.
 
 ### Environment Variables (`.env`)
 
+Todas as variáveis são **opcionais** — a app funciona sem `.env` graças ao
+modelo leve embutido.
+
 ```env
-# Ollama (modelos locais — único provider suportado actualmente)
+# Modelo embutido por omissão (opcional). Vazio → Qwen2.5-0.5B (ultraleve).
+DARKSHERLOCK_DEFAULT_MODEL=
+# Pasta de cache dos GGUF (opcional, default ./models)
+DARKSHERLOCK_MODELS_DIR=
+
+# Ollama (opcional) — se tiveres um servidor a correr, os seus modelos
+# aparecem também na lista de selecção.
 OLLAMA_BASE_URL=http://localhost:11434
 
 # Authenticated forum source — DarkForums (optional, OSINT only)
@@ -383,14 +406,33 @@ DARKFORUMS_PASSWORD=
 DARKFORUMS_BASE_URL=https://darkforums.st
 ```
 
-Ollama models are auto-detected from the running Ollama instance. The
-selection dropdown lists everything returned by `GET /api/tags`.
+### Built-in Lightweight LLM (default)
 
-> **Sobre outros providers (Anthropic, OpenAI, Google, OpenRouter, llama.cpp):**
-> tinham suporte em versões anteriores e foram removidos para focar a tese em
-> modelos locais (privacidade, ausência de fluxo de dados de dark web para
-> terceiros, custo zero). Reintroduzi-los exige acrescentar entradas a
-> `llm_utils.resolve_model_config` + classes Langchain correspondentes.
+A app inclui um modelo LLM leve que corre **dentro do próprio processo** via
+`llama-cpp-python` — sem servidor, sem GPU obrigatória, em qualquer máquina.
+É o backend por omissão e torna a ferramenta funcional out-of-the-box.
+
+- **Auto-download:** o GGUF é descarregado de Hugging Face na primeira
+  investigação (uma vez) para `./models` e reutilizado daí em diante.
+- **Modelos disponíveis** (selecionáveis em **Settings → LLM Model**):
+
+  | Modelo | Tamanho | Notas |
+  |--------|---------|-------|
+  | `Qwen2.5-0.5B (embutido, ultraleve)` | ~400 MB | Default. Corre em qualquer máquina. Qualidade básica. |
+  | `Qwen2.5-1.5B (embutido, leve)` | ~1.1 GB | Melhor análise, ainda leve. Recomendado se a máquina aguentar. |
+  | `Llama-3.2-1B (embutido, leve)` | ~0.8 GB | Alternativa Meta Llama. |
+
+- **Trade-off:** modelos de 0.5–1.5B são rápidos e portáteis mas produzem
+  análises menos profundas que um 7B/8B. Para máxima qualidade, instala Ollama
+  e puxa um modelo maior — ele aparece automaticamente na lista.
+- **Mudar o default sem UI:** define `DARKSHERLOCK_DEFAULT_MODEL` no `.env`
+  com uma das chaves da tabela.
+
+### Ollama (opcional, modelos maiores)
+
+DarkSherlock também detecta modelos servidos por Ollama, listando tudo o que
+`GET /api/tags` devolver — úteis quando se quer mais qualidade que os modelos
+embutidos leves.
 
 ### Authenticated Forum Sources
 
@@ -448,21 +490,27 @@ DarkSherlock/
 │   ├── 1_⚙️_Search_Engines.py  # Engine management & health checks
 │   ├── 2_🔍_Investigation.py   # Alternative pipeline with full sidebar
 │   ├── 3_❓_Help.py            # Documentation & help
-│   └── 4_🐛_Debug.py           # Audit log, app log, diagnostics
+│   ├── 4_🐛_Debug.py           # Audit log, app log, diagnostics
+│   └── 5_🛠️_Settings.py        # Global pipeline & model settings
 ├── llm.py                     # LLM integration, prompts, presets
-├── llm_utils.py               # Model registry, streaming handler
+├── llm_utils.py               # Model registry (built-in + Ollama), streaming handler
+├── local_models.py            # Built-in lightweight GGUF models (llama.cpp) + auto-download
 ├── search.py                  # Multi-engine Tor search (shared sessions)
 ├── scrape.py                  # Tor scraping with paragraph-aware truncation
 ├── engine_manager.py          # Engine CRUD + deepdarkCTI sync
+├── forum_adapters/            # Authenticated forum adapters (DarkForums)
 ├── health.py                  # Tor & engine connectivity checks
 ├── report.py                  # Forensic PDF generation & integrity hashes
 ├── audit.py                   # JSONL audit log & file logging setup
 ├── sidebar.py                 # Shared sidebar across all pages
+├── ui_theme.py                # Shared Streamlit CSS theme
 ├── config.py                  # Environment variable loading
 ├── Dockerfile                 # Docker image with Tor included
 ├── entrypoint.sh              # Docker entrypoint (starts Tor + Streamlit)
+├── update.sh                  # One-command local update + install + run
 ├── requirements.txt           # Python dependencies
 ├── .env.example               # Template for environment variables
+├── models/                    # Cache of downloaded GGUF models (gitignored)
 └── .streamlit/config.toml     # Streamlit theme configuration
 ```
 

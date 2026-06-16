@@ -184,6 +184,10 @@ logs/
 *.log
 *.jsonl
 
+# Modelos LLM embutidos (GGUF descarregados em runtime — não versionar)
+models/
+*.gguf
+
 # macOS
 .DS_Store
 
