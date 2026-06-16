@@ -74,13 +74,26 @@ DEFAULT_BUILTIN_MODEL = (
 )
 
 
+_AVAILABLE: Optional[bool] = None
+
+
 def is_available() -> bool:
-    """True se `llama_cpp` e `huggingface_hub` estão instalados e importáveis."""
-    try:
-        import importlib.util as u
-        return bool(u.find_spec("llama_cpp") and u.find_spec("huggingface_hub"))
-    except Exception:  # noqa: BLE001
-        return False
+    """True se `llama_cpp` e `huggingface_hub` estão instalados E importáveis.
+
+    Tenta o import real (não apenas find_spec): `llama_cpp` é uma extensão C
+    compilada que falha frequentemente a importar por bibliotecas partilhadas
+    em falta ou incompatibilidades de compilação — find_spec não apanharia
+    isso. O resultado é memorizado para não repetir o import a cada render.
+    """
+    global _AVAILABLE
+    if _AVAILABLE is None:
+        try:
+            import huggingface_hub  # noqa: F401
+            import llama_cpp  # noqa: F401
+            _AVAILABLE = True
+        except Exception:  # noqa: BLE001
+            _AVAILABLE = False
+    return _AVAILABLE
 
 
 def is_builtin(model_choice: str) -> bool:
