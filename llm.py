@@ -243,11 +243,21 @@ def filter_results(llm, query, results):
     try:
         result_indices = chain.invoke({"query": query, "results": final_str})
     except Exception as e:
-        # Se o payload for demasiado grande, tenta novamente com versão truncada:
-        # sem links e títulos limitados a 30 caracteres para reduzir tokens
-        print(f"Filter error: {e} \n Retrying with truncated results")
+        # Se o payload for demasiado grande (rate limit, context overflow),
+        # tenta novamente com versão truncada (sem links, títulos a 30 chars).
+        logging.warning("Filter LLM call falhou (%s) — a retry com payload truncado.", e)
         final_str = _generate_final_string(results, truncate=True)
-        result_indices = chain.invoke({"query": query, "results": final_str})
+        try:
+            result_indices = chain.invoke({"query": query, "results": final_str})
+        except Exception as e2:
+            # Se o retry também falhar, devolve top-20 sem ranking LLM em vez
+            # de partir o pipeline inteiro — o filtro de relevância pós-scrape
+            # ainda actua a jusante, pelo que conteúdo irrelevante é descartado.
+            logging.warning(
+                "Filter retry também falhou (%s) — fallback para top-%d sem ranking.",
+                e2, min(len(results), 20),
+            )
+            return results[:20]
 
     # Se o LLM indicou que nenhum resultado é relevante
     if "NONE" in result_indices.upper():
@@ -504,7 +514,23 @@ def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int
     return relevant if relevant else scraped
 
 
-def generate_summary(llm, query, content, preset="threat_intel", custom_instructions=""):
+# Limites de truncagem de conteúdo enviado ao LLM, expostos como constantes
+# de módulo para que callers (Home.py, Investigation.py, ou futuras configs
+# por modelo) os possam ajustar sem editar a função.
+#
+# Valores conservadores adequados a modelos 8B locais (8k–32k tokens de
+# contexto). Para modelos cloud ou modelos locais com contexto maior, podem
+# ser passados explicitamente via `generate_summary(..., max_total_chars=...)`.
+DEFAULT_MAX_TOTAL_CHARS = 12000
+DEFAULT_PER_SOURCE_LIMIT = 1500
+
+
+def generate_summary(
+    llm, query, content,
+    preset="threat_intel", custom_instructions="",
+    max_total_chars: int = DEFAULT_MAX_TOTAL_CHARS,
+    per_source_limit: int = DEFAULT_PER_SOURCE_LIMIT,
+):
     """
     Gera uma análise técnica estruturada do conteúdo recolhido das páginas
     selecionadas, usando o preset de investigação ativo.
@@ -542,15 +568,16 @@ def generate_summary(llm, query, content, preset="threat_intel", custom_instruct
         str: Análise técnica estruturada em Português de Portugal.
     """
     # --- Lógica de truncagem de conteúdo ---
-    MAX_TOTAL_CHARS = 12000
-    PER_SOURCE_LIMIT = 1500
+    # Limites recebidos via parâmetros (com defaults de módulo). Mantém-se
+    # a iteração tal-qual: fontes mais relevantes primeiro (já ordenadas
+    # por filter_results), corte global quando max_total_chars é atingido.
     if isinstance(content, dict):
         truncated = {}
         total = 0
         for url, text in content.items():
-            if total >= MAX_TOTAL_CHARS:
+            if total >= max_total_chars:
                 break
-            chunk = text[:PER_SOURCE_LIMIT]
+            chunk = text[:per_source_limit]
             truncated[url] = chunk
             total += len(chunk)
         content = _format_content_for_llm(truncated)

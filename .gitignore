@@ -178,6 +178,7 @@ cython_debug/
 
 # Robin/DarkSherlock runtime config & generated data
 config/search_engines.json
+config/sessions/
 investigations/
 logs/
 *.log

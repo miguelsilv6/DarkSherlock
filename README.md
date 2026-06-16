@@ -24,7 +24,7 @@
 
 - **6-Stage Investigation Pipeline** — Automated workflow: LLM load → query refinement → multi-engine Tor search → LLM relevance filtering → content scraping → intelligence report generation
 - **Per-Source Analysis** — The LLM analyzes each scraped page individually, citing direct quotes and explaining relevance, rather than producing a generic summary
-- **Multi-Model Support** — OpenAI, Anthropic Claude, Google Gemini, OpenRouter, Ollama (local), and llama.cpp — switch models from the sidebar
+- **Ollama-Powered LLM** — modelos locais via Ollama (Llama, Mistral, Dolphin, etc.) detectados automaticamente do servidor local
 - **34+ Dark Web Search Engines** — 16 built-in engines + 18 from [fastfire/deepdarkCTI](https://github.com/fastfire/deepdarkCTI), all configurable and testable via the UI
 - **Forensic PDF Reports** — Download reports with audit ID, UTC timestamps, SHA-256 integrity hashes (per-page and global), source list, and full analysis
 - **Real-Time Streaming** — Intelligence reports are generated token-by-token with live display
@@ -374,20 +374,53 @@ Repete o Método 2 com a nova imagem e recria o container.
 ### Environment Variables (`.env`)
 
 ```env
-# LLM Providers (add keys for providers you want to use)
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-GOOGLE_API_KEY=AI...
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_API_KEY=sk-or-...
-
-# Local Models (optional)
+# Ollama (modelos locais — único provider suportado actualmente)
 OLLAMA_BASE_URL=http://localhost:11434
-LLAMA_CPP_BASE_URL=http://localhost:8080
+
+# Authenticated forum source — DarkForums (optional, OSINT only)
+DARKFORUMS_USERNAME=
+DARKFORUMS_PASSWORD=
+DARKFORUMS_BASE_URL=https://darkforums.st
 ```
 
-Only providers with configured keys appear in the model selection dropdown.
-Ollama models are auto-detected from the running Ollama instance.
+Ollama models are auto-detected from the running Ollama instance. The
+selection dropdown lists everything returned by `GET /api/tags`.
+
+> **Sobre outros providers (Anthropic, OpenAI, Google, OpenRouter, llama.cpp):**
+> tinham suporte em versões anteriores e foram removidos para focar a tese em
+> modelos locais (privacidade, ausência de fluxo de dados de dark web para
+> terceiros, custo zero). Reintroduzi-los exige acrescentar entradas a
+> `llm_utils.resolve_model_config` + classes Langchain correspondentes.
+
+### Authenticated Forum Sources
+
+DarkSherlock now supports authenticated forum sources via dedicated adapters
+under `forum_adapters/`. The first such adapter is **DarkForums** (MyBB,
+clearnet, Cloudflare-protected) — included strictly for academic OSINT and
+threat-intelligence research.
+
+How it works:
+
+1. Create an account on the forum manually (the tool never registers accounts).
+2. Set `DARKFORUMS_USERNAME` / `DARKFORUMS_PASSWORD` in `.env`. The engine
+   stays disabled until both are present.
+3. Enable the `DarkForums` engine on the **Search Engines** page and click
+   **Test Login** to verify the session.
+4. The pipeline routes queries through `DarkForumsAdapter.search()` and
+   thread fetches through `DarkForumsAdapter.fetch_thread()`, transparently
+   integrating with the existing 6-stage pipeline.
+
+Operational notes:
+
+- Traffic still goes through Tor SOCKS5h on `127.0.0.1:9050`. Cloudflare
+  blocks a portion of Tor exit nodes — expect ~30–60% challenge rate. The
+  adapter uses `curl_cffi` (Chrome TLS/JA3 impersonation) to maximise pass
+  rate; remaining failures are surfaced in `audit.py` as
+  `darkforums_cf_challenge` events.
+- Sessions are persisted to `config/sessions/darkforums.json` (gitignored)
+  to avoid re-login between runs.
+- A 2-second minimum interval between requests is enforced in-adapter as
+  a courtesy rate-limit.
 
 ### Ollama Setup (Local Models)
 
@@ -488,6 +521,14 @@ The tool is designed for:
 - **Threat Intelligence** — monitoring dark web forums, markets, and leak sites
 - **Risk Assessment** — evaluating organizational exposure on the dark web
 - **Academic Research** — studying dark web ecosystems and threat actor behavior
+
+> **Note on authenticated forum sources:** The `DarkForums` adapter
+> (`forum_adapters/darkforums.py`) was added exclusively for passive threat
+> intelligence research. The investigator is expected to: (i) create the
+> account manually, (ii) not post or interact, (iii) limit usage to read-only
+> indexing of public sections. The adapter enforces a minimum 2-second
+> interval between requests and persists sessions locally to minimise
+> footprint on the target service.
 
 ---
 

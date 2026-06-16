@@ -28,6 +28,7 @@ from audit import log_investigation, setup_file_logging
 # Configura o logging para ficheiro (captura debug/info de todos os módulos)
 setup_file_logging()
 from sidebar import render_sidebar
+from ui_theme import inject_theme
 
 st.set_page_config(
     page_title="DarkSherlock — Investigation Pipeline",
@@ -44,73 +45,7 @@ selected_preset = settings["selected_preset"]
 selected_preset_label = settings["selected_preset_label"]
 custom_instructions = settings["custom_instructions"]
 
-# CSS futurista — idêntico ao Home.py para paridade visual entre páginas.
-st.markdown(
-    """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');
-
-    html, body, [class*="css"] {
-        font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace !important;
-    }
-    h1 {
-        font-size: 1.55rem !important; font-weight: 700 !important;
-        letter-spacing: 0.12em !important; text-transform: uppercase !important;
-        color: #00ff9f !important; border-bottom: 1px solid #00ff9f33 !important;
-        padding-bottom: 0.4rem !important; margin-bottom: 1.4rem !important;
-    }
-    h2, h3 { letter-spacing: 0.06em; color: #a0f0c8; }
-    input[type="text"] {
-        background-color: #0d0d14 !important; border: 1px solid #00ff9f55 !important;
-        border-radius: 4px !important; color: #e2e8f0 !important;
-        caret-color: #00ff9f !important; font-family: inherit !important;
-        transition: border-color 0.25s ease, box-shadow 0.25s ease !important;
-    }
-    input[type="text"]:focus {
-        border-color: #00ff9f !important;
-        box-shadow: 0 0 0 1px #00ff9f, 0 0 14px #00ff9f55 !important;
-        outline: none !important;
-    }
-    button[kind="primaryFormSubmit"],
-    button[data-testid="baseButton-primary"],
-    .stButton > button[kind="primary"] {
-        background-color: #00ff9f14 !important; color: #00ff9f !important;
-        border: 1px solid #00ff9f !important; border-radius: 4px !important;
-        font-weight: 600 !important;
-    }
-    button[kind="primaryFormSubmit"]:hover,
-    button[data-testid="baseButton-primary"]:hover,
-    .stButton > button[kind="primary"]:hover {
-        background-color: #00ff9f2a !important; box-shadow: 0 0 10px #00ff9f55 !important;
-    }
-    .stButton > button, .stDownloadButton > button {
-        background-color: transparent !important; color: #a0f0c8 !important;
-        border: 1px solid #a0f0c833 !important; border-radius: 4px !important;
-    }
-    .stButton > button:hover, .stDownloadButton > button:hover {
-        border-color: #00ff9f !important; color: #00ff9f !important;
-    }
-    [data-testid="stStatusWidget"], div[data-testid="stExpander"] {
-        border: 1px solid #00ff9f22 !important; border-radius: 6px !important;
-        background-color: #0d0d18 !important;
-    }
-    div[data-testid="stPillsButton"] button {
-        background-color: #0d0d18 !important; border: 1px solid #00ff9f33 !important;
-        color: #7a9e8e !important; border-radius: 4px !important;
-        font-weight: 500 !important; letter-spacing: 0.04em !important;
-        transition: all 0.2s ease !important;
-    }
-    div[data-testid="stPillsButton"] button[aria-checked="true"] {
-        background-color: #00ff9f18 !important; border-color: #00ff9f !important;
-        color: #00ff9f !important; box-shadow: 0 0 8px #00ff9f44 !important;
-    }
-    div[data-testid="stPillsButton"] button:hover {
-        border-color: #00ff9f88 !important; color: #c0ffe0 !important;
-    }
-    [data-testid="stSidebar"] { border-right: 1px solid #00ff9f1a !important; }
-    </style>""",
-    unsafe_allow_html=True,
-)
+inject_theme()
 
 # --- Past Investigations (sidebar) ---
 INVESTIGATIONS_DIR = Path("investigations")
@@ -123,7 +58,7 @@ def load_investigations():
     investigations = []
     for f in files:
         try:
-            data = json.loads(f.read_text())
+            data = json.loads(f.read_text(encoding="utf-8"))
             data["_filename"] = f.name
             investigations.append(data)
         except Exception:
@@ -152,7 +87,10 @@ def save_investigation(
         "summary": summary,
         "integrity": integrity or {},
     }
-    (INVESTIGATIONS_DIR / fname).write_text(json.dumps(data, indent=2))
+    (INVESTIGATIONS_DIR / fname).write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
     return fname
 
 
@@ -361,8 +299,10 @@ if run_button and query:
         t0 = time.time()
         # search.py já deduplica os resultados por URL — não é necessário
         # repetir o processo aqui. A deduplicação dupla era redundante e O(2n).
+        # Query passa intacta — encoding URL é feito em `fetch_search_results`
+        # para engines simples; adapters recebem a query original.
         st.session_state.results = get_search_results(
-            st.session_state.refined.replace(" ", "+"), max_workers=threads
+            st.session_state.refined, max_workers=threads
         )
         if len(st.session_state.results) > max_results:
             st.session_state.results = st.session_state.results[:max_results]

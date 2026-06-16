@@ -30,26 +30,29 @@ class BufferedStreamingHandler(BaseCallbackHandler):
     def on_llm_new_token(self, token: str, **kwargs) -> None:
         self.buffer += token
         if "\n" in token or len(self.buffer) >= self.buffer_limit:
-            print(self.buffer, end="", flush=True)
             if self.ui_callback:
                 self.ui_callback(self.buffer)
             self.buffer = ""
 
     def on_llm_end(self, response, **kwargs) -> None:
         if self.buffer:
-            print(self.buffer, end="", flush=True)
             if self.ui_callback:
                 self.ui_callback(self.buffer)
             self.buffer = ""
 
 
 # Parâmetros comuns a todos os modelos LLM.
-_common_callbacks = [BufferedStreamingHandler(buffer_limit=60)]
-
+#
+# NOTA: `callbacks` foi deliberadamente removido daqui — caso contrário, todas
+# as instâncias `llm_class(**_common_llm_params)` partilhavam a MESMA referência
+# de lista + handler, com estado mutável (`self.buffer`) entre chamadas e sem
+# thread-safety. O consumidor que precisar de streaming (e.g., Stage 6/6 em
+# Home.py) deve atribuir explicitamente `llm.callbacks = [BufferedStreamingHandler(...)]`
+# após instanciação. `refine_query` e `filter_results` invocam `chain.invoke(...)`
+# que devolve o resultado completo — não precisam de callbacks.
 _common_llm_params = {
     "temperature": 0,
     "streaming": True,
-    "callbacks": _common_callbacks,
 }
 
 

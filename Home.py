@@ -26,6 +26,8 @@ Dependências principais:
 
 import base64
 import json
+import os
+import re
 import time
 import uuid
 import streamlit as st
@@ -42,6 +44,7 @@ from audit import log_investigation, setup_file_logging
 # Configura o logging para ficheiro (captura debug/info de todos os módulos)
 setup_file_logging()
 from health import check_search_engines, check_tor_proxy
+from ui_theme import inject_theme
 
 
 # ---------------------------------------------------------------------------
@@ -91,20 +94,18 @@ def _render_pipeline_error(stage: str, err: Exception) -> None:
         stage: Descrição textual da etapa que falhou (usada na mensagem de erro).
         err:   Excepção capturada durante a execução da etapa.
     """
-    # Normaliza a mensagem de erro para comparação insensível a maiúsculas
-    message = str(err).strip() or err.__class__.__name__
-    lower_msg = message.lower()
+    # Normaliza a mensagem de erro; sanitiza tokens/credenciais antes de mostrar.
+    raw_message = str(err).strip() or err.__class__.__name__
+    message = _scrub_secrets(raw_message)
 
-    # Dicas genéricas apresentadas independentemente do fornecedor
+    # Dicas de diagnóstico — o projecto suporta apenas Ollama local. Outras
+    # providers podem ser reintroduzidos no futuro via llm_utils.resolve_model_config.
     hints = [
-        "- Confirm the relevant API key is set in your `.env` or shell before launching Streamlit.",
-        "- Keys copied from dashboards often include hidden spaces; re-copy if authentication keeps failing.",
-        "- Restart the app after updating environment variables so the new values are picked up.",
+        "- Ensure Ollama is running: `ollama serve` (default: http://localhost:11434).",
+        "- Confirm `OLLAMA_BASE_URL` is set in `.env` and matches the running daemon.",
+        "- Pull the model first: `ollama pull <model-name>`.",
+        "- Restart the app after updating `.env` so the new values are picked up.",
     ]
-
-    # Acrescenta uma dica específica para Ollama
-    if any(token in lower_msg for token in ("ollama", "connection refused", "connect")):
-        hints.insert(0, "- Ensure Ollama is running: `ollama serve`")
 
     # Mostra o painel de erro na interface e interrompe o pipeline
     st.error(
@@ -115,6 +116,131 @@ def _render_pipeline_error(stage: str, err: Exception) -> None:
         )
     )
     st.stop()
+
+
+# ---------------------------------------------------------------------------
+# Sanitização de credenciais em mensagens de erro
+# ---------------------------------------------------------------------------
+
+# Padrões de credenciais que podem aparecer em str(exception) de bibliotecas
+# HTTP (requests, urllib3, langchain). Capturamos por prefixo + valor.
+_SECRET_PATTERNS = [
+    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9_\-\.=]+"),
+    re.compile(r"(?i)(api[_-]?key[=:\s]+)[\"']?[A-Za-z0-9_\-]+[\"']?"),
+    re.compile(r"(?i)(authorization[=:\s]+)[\"']?[^\s\"'&]+[\"']?"),
+    re.compile(r"(?i)(password[=:\s]+)[\"']?[^\s\"'&]+[\"']?"),
+    re.compile(r"(?i)(token[=:\s]+)[\"']?[A-Za-z0-9_\-\.]+[\"']?"),
+]
+
+
+def _scrub_secrets(text: str) -> str:
+    """Substitui valores de credenciais em mensagens de erro por '***'."""
+    for pat in _SECRET_PATTERNS:
+        text = pat.sub(r"\1***", text)
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Renderização do resultado do pipeline
+# ---------------------------------------------------------------------------
+
+def _render_sources_expander(filtered: list, count_label: str | None = None) -> None:
+    """Render do expander de Sources com tratamento .onion vs clearnet."""
+    title = count_label or f"Sources ({len(filtered)} results)"
+    with st.expander(title, expanded=False):
+        st.caption("🧅 Links .onion: copia e abre no Tor Browser")
+        for i, item in enumerate(filtered, 1):
+            link = item.get("link", "")
+            title_text = item.get("title", "Untitled")
+            if ".onion" in link:
+                st.markdown(f"**{i}. {title_text}**")
+                st.code(link, language=None)
+            else:
+                st.markdown(f"{i}. [{title_text}]({link})")
+
+
+def _render_pipeline_result(
+    pc: dict,
+    *,
+    findings_container=None,
+    download_key_prefix: str = "",
+) -> None:
+    """Renderiza Notes, Sources, Findings e download buttons.
+
+    Centraliza a apresentação para evitar duplicação entre o bloco
+    "imediato" (durante o run do pipeline) e o bloco "persistente" (após
+    reruns provocados por download_button). Os dois blocos divergiam
+    subtilmente nos `key=` dos download buttons; este helper torna isso
+    explícito via `download_key_prefix`.
+
+    Args:
+        pc: dict com chaves audit_id, query, refined, model, preset_label,
+            filtered, results_count, scraped_count, summary, integrity,
+            active_engines.
+        findings_container: opcional. Se passado, o markdown do summary é
+            escrito dentro deste container (útil quando há um `st.empty()`
+            partilhado com o streaming handler). Senão, renderiza inline.
+        download_key_prefix: prefixo para as `key=` dos download buttons,
+            necessário para evitar colisão entre múltiplas renderizações.
+    """
+    # --- Notes ---
+    with st.expander("Notes", expanded=False):
+        st.markdown(f"**Refined Query:** `{pc['refined']}`")
+        st.markdown(f"**Model:** `{pc['model']}` | **Domain:** {pc['preset_label']}")
+        st.markdown(
+            f"**Results found:** {pc['results_count']} | "
+            f"**Filtered to:** {len(pc['filtered'])} | "
+            f"**Scraped:** {pc['scraped_count']}"
+        )
+
+    # --- Sources ---
+    _render_sources_expander(pc["filtered"])
+
+    # --- Findings (markdown) ---
+    if findings_container is not None:
+        with findings_container:
+            st.markdown(pc["summary"])
+            st.divider()
+    else:
+        st.subheader(":red[Findings]", anchor=None, divider="gray")
+        st.markdown(pc["summary"])
+        st.divider()
+
+    # --- PDF + Markdown downloads ---
+    pdf_data = {
+        "audit_id": pc["audit_id"],
+        "query": pc["query"],
+        "refined_query": pc["refined"],
+        "model": pc["model"],
+        "preset": pc["preset_label"],
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "active_engines": pc["active_engines"],
+        "sources": pc["filtered"],
+        "integrity": pc["integrity"],
+        "summary": pc["summary"],
+        "results_found": pc["results_count"],
+        "results_scraped": pc["scraped_count"],
+    }
+    pdf_bytes = generate_forensic_pdf(pdf_data)
+    now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    dl1, dl2 = st.columns(2)
+    dl1.download_button(
+        label="⬇ Download Relatório PDF",
+        data=pdf_bytes,
+        file_name=f"relatorio_{pc['audit_id'][:8]}_{now}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+        key=f"{download_key_prefix}dl_pdf" if download_key_prefix else None,
+    )
+    dl2.download_button(
+        label="⬇ Download Summary MD",
+        data=pc["summary"].encode(),
+        file_name=f"summary_{now}.md",
+        mime="text/markdown",
+        use_container_width=True,
+        key=f"{download_key_prefix}dl_md" if download_key_prefix else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +272,13 @@ def save_investigation(
     - integrity: hashes SHA-256 por fonte e hash global (cadeia de custódia)
     """
     INVESTIGATIONS_DIR.mkdir(exist_ok=True)
+    # chmod 700: investigações contêm conteúdo dark web sensível (IOCs, PII,
+    # URLs .onion). Restrição a u=rwx evita leitura por outros utilizadores
+    # no mesmo host. No-op em Windows.
+    try:
+        os.chmod(INVESTIGATIONS_DIR, 0o700)
+    except OSError:
+        pass
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     fname = f"investigation_{timestamp}.json"
     data = {
@@ -164,7 +297,16 @@ def save_investigation(
         # Cadeia de custódia digital (hashes SHA-256)
         "integrity": integrity or {},
     }
-    (INVESTIGATIONS_DIR / fname).write_text(json.dumps(data, indent=2))
+    fpath = INVESTIGATIONS_DIR / fname
+    fpath.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    # chmod 600 no ficheiro pelas mesmas razões do dir.
+    try:
+        os.chmod(fpath, 0o600)
+    except OSError:
+        pass
     return fname
 
 
@@ -191,7 +333,7 @@ def load_investigations() -> list:
     investigations = []
     for f in files:
         try:
-            data = json.loads(f.read_text())
+            data = json.loads(f.read_text(encoding="utf-8"))
             # Anexa o nome do ficheiro ao dicionário para uso na barra lateral
             data["_filename"] = f.name
             investigations.append(data)
@@ -229,11 +371,14 @@ def cached_search_results(refined_query: str):
     Returns:
         Lista de resultados brutos (dicionários com `title` e `link`).
     """
-    return get_search_results(refined_query.replace(" ", "+"), max_workers=4)
+    # A query passa intacta — o encoding URL é feito em `fetch_search_results`
+    # (search.py) para engines simples. Adapters (DarkForums, …) recebem a
+    # query original e tratam o encoding consoante o seu protocolo.
+    return get_search_results(refined_query, max_workers=4)
 
 
 @st.cache_data(ttl=200, show_spinner=False)
-def cached_scrape_multiple(filtered: list, threads: int):
+def cached_scrape_multiple(filtered: list, _threads: int):
     """Extrai o conteúdo textual das páginas filtradas com cache por 200 segundos.
 
     A cache é especialmente valiosa aqui porque o scraping de páginas .onion
@@ -241,14 +386,19 @@ def cached_scrape_multiple(filtered: list, threads: int):
     página). Se o utilizador reexecutar o pipeline com a mesma lista de URLs
     filtrados dentro de 200 segundos, o conteúdo é devolvido imediatamente.
 
+    O parâmetro `_threads` começa com underscore para sinalizar a Streamlit
+    que NÃO faz parte da cache key — só afecta paralelismo, não o resultado.
+    Sem este underscore, mudar o slider de threads invalidaria a cache sem
+    necessidade (mesmo problema que `cached_search_results` já evita).
+
     Args:
-        filtered: Lista de resultados filtrados (devolvida pela etapa 4).
-        threads:  Número de fios de execução paralela para o scraping.
+        filtered:  Lista de resultados filtrados (devolvida pela etapa 4).
+        _threads:  Número de fios de execução paralela (não afecta a cache).
 
     Returns:
         Dicionário `{url: conteúdo_textual}` para cada página processada.
     """
-    return scrape_multiple(filtered, max_workers=threads)
+    return scrape_multiple(filtered, max_workers=_threads)
 
 
 # ---------------------------------------------------------------------------
@@ -265,125 +415,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# CSS futurista — tema cyber/terminal para o DarkSherlock.
-# Injeta estilos globais para tipografia monoespaçada, glow no input de pesquisa,
-# botões com estilo neon, pills de preset com highlight, e containers do pipeline.
-st.markdown(
-    """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');
-
-    html, body, [class*="css"] {
-        font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace !important;
-    }
-
-    h1 {
-        font-size: 1.55rem !important;
-        font-weight: 700 !important;
-        letter-spacing: 0.12em !important;
-        text-transform: uppercase !important;
-        color: #00ff9f !important;
-        border-bottom: 1px solid #00ff9f33 !important;
-        padding-bottom: 0.4rem !important;
-        margin-bottom: 1.4rem !important;
-    }
-    h2, h3 { letter-spacing: 0.06em; color: #a0f0c8; }
-
-    /* Input de pesquisa com glow neon */
-    input[type="text"] {
-        background-color: #0d0d14 !important;
-        border: 1px solid #00ff9f55 !important;
-        border-radius: 4px !important;
-        color: #e2e8f0 !important;
-        caret-color: #00ff9f !important;
-        transition: border-color 0.25s ease, box-shadow 0.25s ease !important;
-        font-family: inherit !important;
-    }
-    input[type="text"]:focus {
-        border-color: #00ff9f !important;
-        box-shadow: 0 0 0 1px #00ff9f, 0 0 14px #00ff9f55 !important;
-        outline: none !important;
-    }
-
-    /* Botão primário (Run / form submit) */
-    button[kind="primaryFormSubmit"],
-    button[data-testid="baseButton-primary"],
-    .stButton > button[kind="primary"] {
-        background-color: #00ff9f14 !important;
-        color: #00ff9f !important;
-        border: 1px solid #00ff9f !important;
-        border-radius: 4px !important;
-        font-weight: 600 !important;
-        transition: background-color 0.2s ease, box-shadow 0.2s ease !important;
-    }
-    button[kind="primaryFormSubmit"]:hover,
-    button[data-testid="baseButton-primary"]:hover,
-    .stButton > button[kind="primary"]:hover {
-        background-color: #00ff9f2a !important;
-        box-shadow: 0 0 10px #00ff9f55 !important;
-    }
-
-    /* Botões secundários (download, load, etc.) */
-    .stButton > button, .stDownloadButton > button {
-        background-color: transparent !important;
-        color: #a0f0c8 !important;
-        border: 1px solid #a0f0c833 !important;
-        border-radius: 4px !important;
-        transition: border-color 0.2s ease !important;
-    }
-    .stButton > button:hover, .stDownloadButton > button:hover {
-        border-color: #00ff9f !important;
-        color: #00ff9f !important;
-    }
-
-    /* Containers das etapas do pipeline e expanders */
-    [data-testid="stStatusWidget"], div[data-testid="stExpander"] {
-        border: 1px solid #00ff9f22 !important;
-        border-radius: 6px !important;
-        background-color: #0d0d18 !important;
-    }
-
-    /* Pills do selector de preset */
-    div[data-testid="stPillsButton"] button {
-        background-color: #0d0d18 !important;
-        border: 1px solid #00ff9f33 !important;
-        color: #7a9e8e !important;
-        border-radius: 4px !important;
-        font-weight: 500 !important;
-        letter-spacing: 0.04em !important;
-        transition: all 0.2s ease !important;
-    }
-    div[data-testid="stPillsButton"] button[aria-checked="true"] {
-        background-color: #00ff9f18 !important;
-        border-color: #00ff9f !important;
-        color: #00ff9f !important;
-        box-shadow: 0 0 8px #00ff9f44 !important;
-    }
-    div[data-testid="stPillsButton"] button:hover {
-        border-color: #00ff9f88 !important;
-        color: #c0ffe0 !important;
-    }
-
-    /* Sidebar com borda neon subtil */
-    [data-testid="stSidebar"] { border-right: 1px solid #00ff9f1a !important; }
-
-    /* Alertas com borda esquerda colorida */
-    [data-testid="stAlertContainer"][kind="success"] {
-        border-left: 3px solid #00ff9f !important;
-        background-color: #00ff9f0d !important;
-    }
-    [data-testid="stAlertContainer"][kind="warning"] { border-left: 3px solid #ffcc00 !important; }
-    [data-testid="stAlertContainer"][kind="error"]   { border-left: 3px solid #ff4444 !important; }
-
-    /* Hiperligação de download legacy */
-    .aStyle {
-        font-size: 18px; font-weight: bold;
-        padding: 5px; padding-left: 0px;
-        text-align: left; color: #00ff9f;
-    }
-    </style>""",
-    unsafe_allow_html=True,
-)
+# Tema visual centralizado em ui_theme.inject_theme — ver ui_theme.py.
+inject_theme()
 
 
 # ---------------------------------------------------------------------------
@@ -814,6 +847,12 @@ if run_button and query:
         meaningful_scraped = filter_scraped_by_relevance(query, meaningful_scraped)
         relevance_removed = pre_relevance_count - len(meaningful_scraped)
 
+        # Sincroniza session_state.scraped com o dict efectivamente usado no
+        # relatório (sem fontes <150 chars e sem fontes irrelevantes). Sem
+        # esta atribuição, leitores posteriores (debug, reruns) viam o dict
+        # original com fontes que NÃO entraram na análise.
+        st.session_state.scraped = meaningful_scraped
+
         # Estampar cada fonte com o timestamp UTC de scraping
         scraped_at_utc = datetime.now(timezone.utc).isoformat()
         for item in st.session_state.filtered:
@@ -999,63 +1038,15 @@ if run_button and query:
         "fname": _fname,
     }
 
-    # Apresentação inline imediata (durante o run do pipeline)
-    with st.expander("Notes", expanded=False):
-        st.markdown(f"**Refined Query:** `{st.session_state.refined}`")
-        st.markdown(f"**Model:** `{model}` | **Domain:** {selected_preset_label}")
-        st.markdown(
-            f"**Results found:** {len(st.session_state.results)} | "
-            f"**Filtered to:** {len(st.session_state.filtered)} | "
-            f"**Scraped:** {scraped_count}"
-        )
-
-    with st.expander(f"Sources ({len(st.session_state.filtered)} results)", expanded=False):
-        st.caption("🧅 Links .onion: copia e abre no Tor Browser")
-        for i, item in enumerate(st.session_state.filtered, 1):
-            title = item.get("title", "Untitled")
-            link = item.get("link", "")
-            if ".onion" in link:
-                st.markdown(f"**{i}. {title}**")
-                st.code(link, language=None)
-            else:
-                st.markdown(f"{i}. [{title}]({link})")
-
-    with findings_container:
-        st.markdown(st.session_state.streamed_summary)
-        st.divider()
-
-        pdf_data = {
-            "audit_id": audit_id,
-            "query": query,
-            "refined_query": st.session_state.refined,
-            "model": model,
-            "preset": selected_preset_label,
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "active_engines": [e["name"] for e in active_engines],
-            "sources": st.session_state.filtered,
-            "integrity": integrity,
-            "summary": st.session_state.streamed_summary,
-            "results_found": len(st.session_state.results),
-            "results_scraped": scraped_count,
-        }
-        pdf_bytes = generate_forensic_pdf(pdf_data)
-
-        now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        dl_col1, dl_col2 = st.columns(2)
-        dl_col1.download_button(
-            label="⬇ Download Relatório PDF",
-            data=pdf_bytes,
-            file_name=f"relatorio_{audit_id[:8]}_{now}.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
-        dl_col2.download_button(
-            label="⬇ Download Summary MD",
-            data=st.session_state.streamed_summary.encode(),
-            file_name=f"summary_{now}.md",
-            mime="text/markdown",
-            use_container_width=True,
-        )
+    # Apresentação inline imediata (durante o run do pipeline).
+    # `findings_container` foi criado antes do streaming para que o
+    # `summary_slot` (st.empty) actualize a região correcta — passamo-lo
+    # ao helper para que escreva o markdown final dentro dele em vez de
+    # criar um novo bloco abaixo do painel de Stage 6.
+    _render_pipeline_result(
+        st.session_state["pipeline_complete"],
+        findings_container=findings_container,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1069,64 +1060,7 @@ if run_button and query:
 
 if "pipeline_complete" in st.session_state and not run_button and "loaded_investigation" not in st.session_state:
     _pc = st.session_state["pipeline_complete"]
-
     st.success(f"Pipeline completed in {_fmt_ms(_pc['pipeline_ms'])} — saved as `{_pc['fname']}`")
-
-    with st.expander("Notes", expanded=False):
-        st.markdown(f"**Refined Query:** `{_pc['refined']}`")
-        st.markdown(f"**Model:** `{_pc['model']}` | **Domain:** {_pc['preset_label']}")
-        st.markdown(
-            f"**Results found:** {_pc['results_count']} | "
-            f"**Filtered to:** {len(_pc['filtered'])} | "
-            f"**Scraped:** {_pc['scraped_count']}"
-        )
-
-    with st.expander(f"Sources ({len(_pc['filtered'])} results)", expanded=False):
-        st.caption("🧅 Links .onion: copia e abre no Tor Browser")
-        for _i, _item in enumerate(_pc["filtered"], 1):
-            _title = _item.get("title", "Untitled")
-            _link = _item.get("link", "")
-            if ".onion" in _link:
-                st.markdown(f"**{_i}. {_title}**")
-                st.code(_link, language=None)
-            else:
-                st.markdown(f"{_i}. [{_title}]({_link})")
-
-    st.subheader(":red[Findings]", anchor=None, divider="gray")
-    st.markdown(_pc["summary"])
-    st.divider()
-
-    _pc_pdf_data = {
-        "audit_id": _pc["audit_id"],
-        "query": _pc["query"],
-        "refined_query": _pc["refined"],
-        "model": _pc["model"],
-        "preset": _pc["preset_label"],
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "active_engines": _pc["active_engines"],
-        "sources": _pc["filtered"],
-        "integrity": _pc["integrity"],
-        "summary": _pc["summary"],
-        "results_found": _pc["results_count"],
-        "results_scraped": _pc["scraped_count"],
-    }
-    _pc_pdf_bytes = generate_forensic_pdf(_pc_pdf_data)
-
-    _pc_now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    _pc_dl1, _pc_dl2 = st.columns(2)
-    _pc_dl1.download_button(
-        label="⬇ Download Relatório PDF",
-        data=_pc_pdf_bytes,
-        file_name=f"relatorio_{_pc['audit_id'][:8]}_{_pc_now}.pdf",
-        mime="application/pdf",
-        use_container_width=True,
-        key="pc_dl_pdf",
-    )
-    _pc_dl2.download_button(
-        label="⬇ Download Summary MD",
-        data=_pc["summary"].encode(),
-        file_name=f"summary_{_pc_now}.md",
-        mime="text/markdown",
-        use_container_width=True,
-        key="pc_dl_md",
-    )
+    # `download_key_prefix="pc_"` evita colisão de keys com os botões
+    # equivalentes renderizados durante o run do pipeline.
+    _render_pipeline_result(_pc, download_key_prefix="pc_")
