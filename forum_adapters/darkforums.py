@@ -381,7 +381,12 @@ class DarkForumsAdapter(ForumAdapter):
         if self._session is None:
             return None
         try:
-            for cookie in self._session.cookies.jar:
+            # `curl_cffi.requests.Session.cookies` é uma classe `Cookies`
+            # iterável directamente sobre os cookies — NÃO tem atributo `.jar`
+            # (ao contrário do que se poderia assumir por analogia com http.cookiejar).
+            # Aceder a `.jar` levanta AttributeError silenciado pelo except,
+            # fazendo com que a detecção de login devolva sempre None.
+            for cookie in self._session.cookies:
                 if cookie.name == name:
                     return cookie.value
         except Exception:  # noqa: BLE001
@@ -424,9 +429,11 @@ class DarkForumsAdapter(ForumAdapter):
                 os.chmod(_SESSION_DIR, 0o700)
             except OSError:
                 pass
+            # Iteração directa: `Cookies` é iterável; não tem `.jar`
+            # (ver nota em _cookie_value).
             data = [
                 {"name": c.name, "value": c.value, "domain": c.domain, "path": c.path}
-                for c in self._session.cookies.jar
+                for c in self._session.cookies
             ]
             _SESSION_FILE.write_text(json.dumps(data), encoding="utf-8")
             try:
