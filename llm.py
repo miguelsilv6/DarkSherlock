@@ -204,7 +204,17 @@ def refine_query(llm, user_input, preset="threat_intel"):
         [("system", system_prompt), ("user", "{query}")]
     )
     chain = prompt_template | llm | StrOutputParser()
-    return chain.invoke({"query": user_input})
+    refined = chain.invoke({"query": user_input}).strip()
+    # Salvaguarda: um modelo pequeno pode devolver string vazia ou só
+    # pontuação/aspas em vez de keywords. Sem isto, uma query vazia chega
+    # ao motor de pesquisa e devolve 0 resultados sem explicação visível.
+    if not refined or not any(c.isalnum() for c in refined):
+        logger.warning(
+            "refine_query devolveu output vazio/inválido (%r) — a usar input original como fallback.",
+            refined,
+        )
+        return user_input
+    return refined
 
 
 def filter_results(llm, query, results):
@@ -290,8 +300,27 @@ def filter_results(llm, query, results):
             )
             return results[:20]
 
-    # Se o LLM indicou que nenhum resultado é relevante
+    # Se o LLM indicou que nenhum resultado é relevante, não confiar cegamente:
+    # modelos pequenos (ex.: built-in 0.5B) respondem "NONE" com frequência
+    # mesmo perante resultados claramente relevantes — a tarefa de ranking
+    # é difícil de seguir com fiabilidade a essa escala. Antes de descartar
+    # tudo, faz um fallback por keyword matching simples nos títulos/links:
+    # se houver matches óbvios da query, mantém-nos em vez de devolver [].
     if "NONE" in result_indices.upper():
+        keywords = _extract_query_keywords(query)
+        keyword_matches = []
+        if keywords:
+            for r in results:
+                haystack = f"{r.get('title', '')} {r.get('link', '')}".lower()
+                if any(kw in haystack for kw in keywords):
+                    keyword_matches.append(r)
+        if keyword_matches:
+            logger.warning(
+                "LLM filter respondeu NONE mas %d/%d resultados têm match de keyword "
+                "com a query ('%s') — a ignorar o NONE e a usar fallback por keyword.",
+                len(keyword_matches), len(results), query[:60],
+            )
+            return keyword_matches[:20]
         logger.info("LLM filter returned NONE — no relevant results found.")
         return []
 
@@ -511,6 +540,18 @@ _GENERIC_QUERY_TERMS = {
 }
 
 
+def _extract_query_keywords(query: str) -> list[str]:
+    """Extrai keywords distintivas (3+ chars, sem termos genéricos/duplicados)."""
+    seen = set()
+    keywords = []
+    for w in query.split():
+        wl = w.lower()
+        if len(wl) >= 3 and wl not in _GENERIC_QUERY_TERMS and wl not in seen:
+            seen.add(wl)
+            keywords.append(wl)
+    return keywords
+
+
 def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int = 2) -> dict:
     """
     Filtra conteúdo scrapeado por relevância: mantém apenas fontes que
@@ -533,15 +574,7 @@ def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int
     Devolve:
         dict: Subconjunto do dict original contendo apenas fontes relevantes.
     """
-    # Extrai keywords distintivas da query (3+ chars, lowercase, sem termos
-    # genéricos e sem duplicados — preservando a ordem).
-    seen = set()
-    keywords = []
-    for w in query.split():
-        wl = w.lower()
-        if len(wl) >= 3 and wl not in _GENERIC_QUERY_TERMS and wl not in seen:
-            seen.add(wl)
-            keywords.append(wl)
+    keywords = _extract_query_keywords(query)
     if not keywords:
         return scraped  # sem keywords úteis, não filtra
 
@@ -625,6 +658,24 @@ def generate_summary(
     Devolve:
         str: Análise técnica estruturada em Português de Portugal.
     """
+    # Guarda de integridade forense: sem evidência real, não invocar o LLM.
+    # Um dict/string vazio (todo o scraping falhou, ou o filtro de relevância
+    # removeu tudo) faria o LLM gerar uma "análise" a partir de um prompt sem
+    # conteúdo — nada garante que ele responda com o scaffold vazio em vez de
+    # alucinar factos, o que numa ferramenta de análise forense apresentaria
+    # invenção como se fosse evidência real. Falha de forma explícita em vez
+    # de arriscar isso, e poupa uma chamada LLM que não teria nada para analisar.
+    if not content:
+        logger.warning("generate_summary chamado sem conteúdo (content vazio) — a devolver sem invocar o LLM.")
+        return (
+            "## Sem dados suficientes para análise\n\n"
+            "Nenhuma fonte foi scrapeada com sucesso ou passou no filtro de relevância "
+            "para esta investigação. Possíveis causas: serviços .onion inacessíveis, "
+            "Tor instável, ou a query não teve correspondência real no conteúdo recolhido.\n\n"
+            "Sugestão: verifica o estado do Tor, tenta motores de pesquisa adicionais, "
+            "ou reformula a query."
+        )
+
     # --- Lógica de truncagem de conteúdo ---
     # Limites recebidos via parâmetros (com defaults de módulo). Mantém-se
     # a iteração tal-qual: fontes mais relevantes primeiro (já ordenadas
@@ -639,6 +690,12 @@ def generate_summary(
             truncated[url] = chunk
             total += len(chunk)
         content = _format_content_for_llm(truncated)
+        if not content:
+            logger.warning("generate_summary: conteúdo formatado ficou vazio após truncagem — a devolver sem invocar o LLM.")
+            return (
+                "## Sem dados suficientes para análise\n\n"
+                "O conteúdo recolhido não pôde ser processado (vazio após truncagem)."
+            )
 
     # Estratégia para modelos 8B: system prompt ULTRA-CURTO + tudo o resto no user message.
     # Modelos pequenos ignoram system prompts longos; colocar as instruções no
@@ -664,4 +721,39 @@ Produz a análise forense agora. Responde APENAS em Português de Portugal."""
         [("system", _DFIR_SYSTEM), ("user", "{user_input}")]
     )
     chain = prompt_template | llm | StrOutputParser()
-    return chain.invoke({"user_input": user_message})
+    result = chain.invoke({"user_input": user_message})
+    return _flag_scaffold_echo(result)
+
+
+# Fragmentos literais das instruções entre parênteses de _OUTPUT_FORMAT.
+# Servem de assinatura para detetar quando o modelo copiou o scaffold em
+# vez de o substituir por conteúdo real — falha observada com o modelo
+# embutido mais leve (Qwen2.5-0.5B): a tarefa (extrair + estruturar +
+# ignorar meta-instruções + escrever em PT-PT) excede a sua capacidade em
+# parte dos casos, mesmo depois de afinar repeat_penalty. Não há forma
+# fiável de "corrigir" isto ajustando o prompt para um modelo desta escala
+# — a alternativa honesta é avisar em vez de entregar silenciosamente um
+# relatório vazio como se fosse uma análise real.
+_SCAFFOLD_ECHO_MARKERS = (
+    "Cria uma subsecção",
+    "Lista os indicadores técnicos",
+    "observações accionáveis",
+    "Queries e acções de investigação sugeridas",
+)
+
+
+def _flag_scaffold_echo(summary: str) -> str:
+    """Antepõe um aviso se o relatório parece ter copiado o template sem o preencher."""
+    if any(marker in summary for marker in _SCAFFOLD_ECHO_MARKERS):
+        logger.warning(
+            "generate_summary: output contém instruções do template por preencher "
+            "— o modelo provavelmente copiou o scaffold em vez de gerar conteúdo real."
+        )
+        warning = (
+            "> ⚠️ **Aviso de qualidade:** este relatório parece conter partes do "
+            "molde por preencher em vez de análise real — o modelo selecionado "
+            "pode ser demasiado pequeno para esta tarefa. Tenta repetir a "
+            "investigação com um modelo maior (ex.: Qwen2.5-1.5B) nas Settings.\n\n"
+        )
+        return warning + summary
+    return summary

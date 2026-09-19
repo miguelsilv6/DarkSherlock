@@ -170,6 +170,14 @@ def build_constructor_params(model_choice: str) -> dict:
         "model_path": model_path,
         "n_ctx": spec["n_ctx"],
         "max_tokens": spec["max_tokens"],
+        # repeat_penalty: sem isto, com temperature=0 (greedy decoding, ver
+        # llm_utils._common_llm_params), modelos pequenos (0.5B-1.5B) entram
+        # facilmente em loops de repetição literal em outputs longos (o
+        # relatório do Stage 6 tem centenas de tokens) — o próprio token mais
+        # provável a seguir a um token repetido é frequentemente ele mesmo.
+        # 1.1 é o valor de referência do llama.cpp para mitigar isto sem
+        # distorcer demasiado a distribuição de probabilidade.
+        "repeat_penalty": 1.1,
         # n_threads=None → llama.cpp auto-deteta os cores disponíveis.
         "verbose": False,
     }
