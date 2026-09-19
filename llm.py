@@ -658,6 +658,24 @@ def generate_summary(
     Devolve:
         str: Análise técnica estruturada em Português de Portugal.
     """
+    # Guarda de integridade forense: sem evidência real, não invocar o LLM.
+    # Um dict/string vazio (todo o scraping falhou, ou o filtro de relevância
+    # removeu tudo) faria o LLM gerar uma "análise" a partir de um prompt sem
+    # conteúdo — nada garante que ele responda com o scaffold vazio em vez de
+    # alucinar factos, o que numa ferramenta de análise forense apresentaria
+    # invenção como se fosse evidência real. Falha de forma explícita em vez
+    # de arriscar isso, e poupa uma chamada LLM que não teria nada para analisar.
+    if not content:
+        logger.warning("generate_summary chamado sem conteúdo (content vazio) — a devolver sem invocar o LLM.")
+        return (
+            "## Sem dados suficientes para análise\n\n"
+            "Nenhuma fonte foi scrapeada com sucesso ou passou no filtro de relevância "
+            "para esta investigação. Possíveis causas: serviços .onion inacessíveis, "
+            "Tor instável, ou a query não teve correspondência real no conteúdo recolhido.\n\n"
+            "Sugestão: verifica o estado do Tor, tenta motores de pesquisa adicionais, "
+            "ou reformula a query."
+        )
+
     # --- Lógica de truncagem de conteúdo ---
     # Limites recebidos via parâmetros (com defaults de módulo). Mantém-se
     # a iteração tal-qual: fontes mais relevantes primeiro (já ordenadas
@@ -672,6 +690,12 @@ def generate_summary(
             truncated[url] = chunk
             total += len(chunk)
         content = _format_content_for_llm(truncated)
+        if not content:
+            logger.warning("generate_summary: conteúdo formatado ficou vazio após truncagem — a devolver sem invocar o LLM.")
+            return (
+                "## Sem dados suficientes para análise\n\n"
+                "O conteúdo recolhido não pôde ser processado (vazio após truncagem)."
+            )
 
     # Estratégia para modelos 8B: system prompt ULTRA-CURTO + tudo o resto no user message.
     # Modelos pequenos ignoram system prompts longos; colocar as instruções no
@@ -697,4 +721,39 @@ Produz a análise forense agora. Responde APENAS em Português de Portugal."""
         [("system", _DFIR_SYSTEM), ("user", "{user_input}")]
     )
     chain = prompt_template | llm | StrOutputParser()
-    return chain.invoke({"user_input": user_message})
+    result = chain.invoke({"user_input": user_message})
+    return _flag_scaffold_echo(result)
+
+
+# Fragmentos literais das instruções entre parênteses de _OUTPUT_FORMAT.
+# Servem de assinatura para detetar quando o modelo copiou o scaffold em
+# vez de o substituir por conteúdo real — falha observada com o modelo
+# embutido mais leve (Qwen2.5-0.5B): a tarefa (extrair + estruturar +
+# ignorar meta-instruções + escrever em PT-PT) excede a sua capacidade em
+# parte dos casos, mesmo depois de afinar repeat_penalty. Não há forma
+# fiável de "corrigir" isto ajustando o prompt para um modelo desta escala
+# — a alternativa honesta é avisar em vez de entregar silenciosamente um
+# relatório vazio como se fosse uma análise real.
+_SCAFFOLD_ECHO_MARKERS = (
+    "Cria uma subsecção",
+    "Lista os indicadores técnicos",
+    "observações accionáveis",
+    "Queries e acções de investigação sugeridas",
+)
+
+
+def _flag_scaffold_echo(summary: str) -> str:
+    """Antepõe um aviso se o relatório parece ter copiado o template sem o preencher."""
+    if any(marker in summary for marker in _SCAFFOLD_ECHO_MARKERS):
+        logger.warning(
+            "generate_summary: output contém instruções do template por preencher "
+            "— o modelo provavelmente copiou o scaffold em vez de gerar conteúdo real."
+        )
+        warning = (
+            "> ⚠️ **Aviso de qualidade:** este relatório parece conter partes do "
+            "molde por preencher em vez de análise real — o modelo selecionado "
+            "pode ser demasiado pequeno para esta tarefa. Tenta repetir a "
+            "investigação com um modelo maior (ex.: Qwen2.5-1.5B) nas Settings.\n\n"
+        )
+        return warning + summary
+    return summary
