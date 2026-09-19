@@ -204,7 +204,17 @@ def refine_query(llm, user_input, preset="threat_intel"):
         [("system", system_prompt), ("user", "{query}")]
     )
     chain = prompt_template | llm | StrOutputParser()
-    return chain.invoke({"query": user_input})
+    refined = chain.invoke({"query": user_input}).strip()
+    # Salvaguarda: um modelo pequeno pode devolver string vazia ou só
+    # pontuação/aspas em vez de keywords. Sem isto, uma query vazia chega
+    # ao motor de pesquisa e devolve 0 resultados sem explicação visível.
+    if not refined or not any(c.isalnum() for c in refined):
+        logger.warning(
+            "refine_query devolveu output vazio/inválido (%r) — a usar input original como fallback.",
+            refined,
+        )
+        return user_input
+    return refined
 
 
 def filter_results(llm, query, results):
@@ -290,8 +300,27 @@ def filter_results(llm, query, results):
             )
             return results[:20]
 
-    # Se o LLM indicou que nenhum resultado é relevante
+    # Se o LLM indicou que nenhum resultado é relevante, não confiar cegamente:
+    # modelos pequenos (ex.: built-in 0.5B) respondem "NONE" com frequência
+    # mesmo perante resultados claramente relevantes — a tarefa de ranking
+    # é difícil de seguir com fiabilidade a essa escala. Antes de descartar
+    # tudo, faz um fallback por keyword matching simples nos títulos/links:
+    # se houver matches óbvios da query, mantém-nos em vez de devolver [].
     if "NONE" in result_indices.upper():
+        keywords = _extract_query_keywords(query)
+        keyword_matches = []
+        if keywords:
+            for r in results:
+                haystack = f"{r.get('title', '')} {r.get('link', '')}".lower()
+                if any(kw in haystack for kw in keywords):
+                    keyword_matches.append(r)
+        if keyword_matches:
+            logger.warning(
+                "LLM filter respondeu NONE mas %d/%d resultados têm match de keyword "
+                "com a query ('%s') — a ignorar o NONE e a usar fallback por keyword.",
+                len(keyword_matches), len(results), query[:60],
+            )
+            return keyword_matches[:20]
         logger.info("LLM filter returned NONE — no relevant results found.")
         return []
 
@@ -511,6 +540,18 @@ _GENERIC_QUERY_TERMS = {
 }
 
 
+def _extract_query_keywords(query: str) -> list[str]:
+    """Extrai keywords distintivas (3+ chars, sem termos genéricos/duplicados)."""
+    seen = set()
+    keywords = []
+    for w in query.split():
+        wl = w.lower()
+        if len(wl) >= 3 and wl not in _GENERIC_QUERY_TERMS and wl not in seen:
+            seen.add(wl)
+            keywords.append(wl)
+    return keywords
+
+
 def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int = 2) -> dict:
     """
     Filtra conteúdo scrapeado por relevância: mantém apenas fontes que
@@ -533,15 +574,7 @@ def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int
     Devolve:
         dict: Subconjunto do dict original contendo apenas fontes relevantes.
     """
-    # Extrai keywords distintivas da query (3+ chars, lowercase, sem termos
-    # genéricos e sem duplicados — preservando a ordem).
-    seen = set()
-    keywords = []
-    for w in query.split():
-        wl = w.lower()
-        if len(wl) >= 3 and wl not in _GENERIC_QUERY_TERMS and wl not in seen:
-            seen.add(wl)
-            keywords.append(wl)
+    keywords = _extract_query_keywords(query)
     if not keywords:
         return scraped  # sem keywords úteis, não filtra
 
