@@ -188,6 +188,15 @@ logs/
 models/
 *.gguf
 
+# Baseline manual (Capítulo 6, secção 6.5) — dados reais de uma execução:
+# fontes recolhidas (pode conter conteúdo sensível/dark web), relatórios
+# preenchidos e o log de cronometragem. A ferramenta e os templates em
+# branco (evaluation/baseline_manual/templates/) continuam versionados.
+evaluation/baseline_manual/sources/
+evaluation/baseline_manual/reports/
+evaluation/baseline_manual/timing_log.csv
+evaluation/baseline_manual/.timer_state.json
+
 # macOS
 .DS_Store
 
