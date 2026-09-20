@@ -31,13 +31,16 @@ Connection` na app, ou já tenhas usado esse modelo antes, para o download
 não entrar na cronometragem da 1ª execução).
 
 Uso:
-    # Compara dois modelos embutidos, 5 execuções por cenário cada
+    # Compara dois modelos embutidos, 5 execuções por cenário cada.
+    # NOTA: os modelos são separados por ";" (não ","), porque os próprios
+    # nomes dos modelos contêm vírgulas (ex.: "Qwen2.5-0.5B (embutido,
+    # ultraleve)") — usar "," partiria um único nome em dois.
     python evaluation/run_multi_model_eval.py \\
-        --models "Qwen2.5-0.5B (embutido, muito leve),Qwen2.5-1.5B (embutido, leve)" \\
+        --models "Qwen2.5-0.5B (embutido, ultraleve);Qwen2.5-1.5B (embutido, leve)" \\
         --runs 5
 
     # Só alguns cenários, teste rápido
-    python evaluation/run_multi_model_eval.py --models "Qwen2.5-0.5B (embutido, muito leve)" \\
+    python evaluation/run_multi_model_eval.py --models "Qwen2.5-0.5B (embutido, ultraleve)" \\
         --scenarios A1,B1,C1 --runs 2
 """
 
@@ -171,7 +174,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--models", type=str, required=True,
-        help="Lista separada por vírgulas de modelos a testar (labels exatas da UI, ver Settings).",
+        help="Lista de modelos a testar SEPARADOS POR ';' (labels exatas da UI, ver Settings). "
+             "Não usar ',' — os próprios nomes dos modelos contêm vírgulas, ex.: "
+             "\"Qwen2.5-0.5B (embutido, ultraleve);Qwen2.5-1.5B (embutido, leve)\".",
     )
     parser.add_argument(
         "--scenarios", type=str, default=None,
@@ -211,7 +216,7 @@ def main():
         print("ERRO: nenhum cenário selecionado.")
         sys.exit(1)
 
-    requested_models = [m.strip() for m in args.models.split(",") if m.strip()]
+    requested_models = [m.strip() for m in args.models.split(";") if m.strip()]
     available_models = set(get_model_choices())
     unknown_models = [m for m in requested_models if m not in available_models]
     if unknown_models:
