@@ -36,7 +36,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import statistics
+import subprocess
 import sys
 import time
 import uuid
@@ -55,6 +57,8 @@ from scrape import scrape_multiple
 from report import compute_integrity_hashes
 from engine_manager import get_active_engines
 from audit import log_investigation, setup_file_logging
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Os 12 cenários — Tabela 12 do relatório, reproduzidos literalmente
@@ -94,6 +98,64 @@ def _check_tor() -> bool:
         return True
     except OSError:
         return False
+
+
+def _restart_tor() -> bool:
+    """
+    Tenta reiniciar o serviço Tor via systemctl (systemd) ou service
+    (sysvinit/OpenRC) como fallback. Requer privilégios suficientes (root,
+    ou sudo sem password configurado) — se não os houver, o comando falha
+    silenciosamente (returncode != 0 ou binário inexistente) e quem chamou
+    (ensure_tor) simplesmente continua a aguardar/reportar falha.
+
+    Devolve True se algum dos comandos correu com sucesso (returncode 0) —
+    não garante que o Tor fique operacional, isso é verificado à parte por
+    _check_tor() no polling de ensure_tor().
+    """
+    for cmd in (["systemctl", "restart", "tor"], ["service", "tor", "restart"]):
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            if result.returncode == 0:
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return False
+
+
+def ensure_tor(max_wait_s: int = 60, poll_interval_s: int = 3) -> tuple[bool, bool]:
+    """
+    Garante que o Tor está acessível em 127.0.0.1:9050 antes de uma
+    execução, tentando recuperar automaticamente se não estiver.
+
+    Numa corrida longa (várias horas, múltiplos cenários/execuções), o Tor
+    pode cair a meio sem isso ser óbvio — as etapas de busca/scraping que
+    dependem dele simplesmente devolveriam 0 resultados ou erros de rede,
+    contaminando silenciosamente as métricas em vez de a corrida recuperar
+    ou falhar de forma explícita. Por isso esta verificação corre antes de
+    CADA execução (não só uma vez no arranque do script).
+
+    Devolve (ok, restart_tentado):
+      - ok: True se o Tor está acessível (de início, ou após recuperar).
+      - restart_tentado: True se foi necessário tentar reiniciar o serviço
+        (útil para assinalar no CSV que esta execução decorreu depois de
+        uma falha de infraestrutura, não é uma corrida "limpa").
+    """
+    if _check_tor():
+        return True, False
+
+    logger.warning("Tor inacessível em 127.0.0.1:9050 — a tentar reiniciar o serviço...")
+    _restart_tor()
+
+    waited = 0
+    while waited < max_wait_s:
+        time.sleep(poll_interval_s)
+        waited += poll_interval_s
+        if _check_tor():
+            logger.info("Tor recuperado após ~%ds de espera/reinício.", waited)
+            return True, True
+
+    logger.error("Tor continua inacessível após %ds — a reportar falha para esta execução.", max_wait_s)
+    return False, True
 
 
 def run_one(scenario: dict, model_choice: str, llm) -> dict:
@@ -213,11 +275,13 @@ def main():
                         help="Modelo a usar (label exata da UI). Omitir usa o primeiro disponível.")
     args = parser.parse_args()
 
-    if not _check_tor():
-        print("ERRO: Tor não está acessível em 127.0.0.1:9050. Arranca o Tor antes de correr a avaliação.")
-        sys.exit(1)
-
     setup_file_logging()
+
+    tor_ok, _ = ensure_tor()
+    if not tor_ok:
+        print("ERRO: Tor não está acessível em 127.0.0.1:9050 e a tentativa automática de reinício "
+              "(systemctl/service) falhou. Arranca o Tor manualmente antes de correr a avaliação.")
+        sys.exit(1)
 
     scenarios = SCENARIOS
     if args.scenarios:
@@ -256,17 +320,29 @@ def main():
         writer = None
         for scenario in scenarios:
             for run_idx in range(1, args.runs + 1):
+                # Verifica (e tenta recuperar) o Tor antes de CADA execução — não
+                # só uma vez no arranque — para que uma queda a meio de uma
+                # corrida longa não contamine silenciosamente os resultados.
+                tor_ok, tor_restart_needed = ensure_tor()
+                if not tor_ok:
+                    msg = "Tor inacessível (reinício automático falhou) — execução saltada."
+                    print(f"[{scenario['id']}] execução {run_idx}/{args.runs} — SALTADA: {msg}")
+                    all_rows.append({"scenario_id": scenario["id"], "run_idx": run_idx, "error": msg})
+                    continue
+
                 print(f"[{scenario['id']}] execução {run_idx}/{args.runs} — query: '{scenario['query']}' ...", end=" ", flush=True)
                 try:
                     row = run_one(scenario, model_choice, llm)
                     row["run_idx"] = run_idx
+                    row["tor_restart_needed"] = int(tor_restart_needed)
                     all_rows.append(row)
                     if writer is None:
                         writer = csv.DictWriter(f, fieldnames=list(row.keys()))
                         writer.writeheader()
                     writer.writerow(row)
                     f.flush()
-                    print(f"OK ({row['total_ms']} ms, {row['results_scraped']} fontes)")
+                    restart_note = " [Tor teve de ser reiniciado antes desta execução]" if tor_restart_needed else ""
+                    print(f"OK ({row['total_ms']} ms, {row['results_scraped']} fontes){restart_note}")
                 except Exception as e:
                     print(f"FALHOU: {e}")
                     all_rows.append({"scenario_id": scenario["id"], "run_idx": run_idx, "error": str(e)})

@@ -192,11 +192,13 @@ def main():
         print("ERRO: --runs tem de ser >= 1.")
         sys.exit(1)
 
-    if not base._check_tor():
-        print("ERRO: Tor não está acessível em 127.0.0.1:9050. Arranca o Tor antes de correr a avaliação.")
-        sys.exit(1)
-
     setup_file_logging()
+
+    tor_ok, _ = base.ensure_tor()
+    if not tor_ok:
+        print("ERRO: Tor não está acessível em 127.0.0.1:9050 e a tentativa automática de reinício "
+              "(systemctl/service) falhou. Arranca o Tor manualmente antes de correr a avaliação.")
+        sys.exit(1)
 
     scenarios = base.SCENARIOS
     if args.scenarios:
@@ -245,6 +247,20 @@ def main():
 
             for scenario in scenarios:
                 for run_idx in range(1, args.runs + 1):
+                    # Verifica (e tenta recuperar) o Tor antes de CADA execução —
+                    # esta corrida pode demorar horas ao longo de vários modelos,
+                    # e uma queda de Tor a meio não deve contaminar silenciosamente
+                    # os resultados de fontes/tempos.
+                    tor_ok, tor_restart_needed = base.ensure_tor()
+                    if not tor_ok:
+                        msg = "Tor inacessível (reinício automático falhou) — execução saltada."
+                        print(f"[{model_choice}][{scenario['id']}] execução {run_idx}/{args.runs} — SALTADA: {msg}")
+                        all_rows.append({
+                            "model": model_choice, "scenario_id": scenario["id"],
+                            "run_idx": run_idx, "error": msg,
+                        })
+                        continue
+
                     print(
                         f"[{model_choice}][{scenario['id']}] execução {run_idx}/{args.runs} "
                         f"— query: '{scenario['query']}' ...",
@@ -253,6 +269,7 @@ def main():
                     try:
                         row = run_one_with_capture(scenario, model_choice, llm)
                         row["run_idx"] = run_idx
+                        row["tor_restart_needed"] = int(tor_restart_needed)
                         all_rows.append(row)
                         if writer is None:
                             writer = csv.DictWriter(f, fieldnames=list(row.keys()))
@@ -261,7 +278,8 @@ def main():
                         f.flush()
                         flags_hit = [k for k in FALLBACK_MARKERS if row.get(k)]
                         flag_note = f", fallback: {','.join(flags_hit)}" if flags_hit else ""
-                        print(f"OK ({row['total_ms']} ms, {row['results_scraped']} fontes{flag_note})")
+                        restart_note = " [Tor reiniciado antes desta execução]" if tor_restart_needed else ""
+                        print(f"OK ({row['total_ms']} ms, {row['results_scraped']} fontes{flag_note}){restart_note}")
                     except Exception as e:
                         print(f"FALHOU: {e}")
                         all_rows.append({
