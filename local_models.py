@@ -69,11 +69,21 @@ BUILTIN_MODELS: dict[str, dict] = {
     },
     # ---------------------------------------------------------------------
     # Modelos adicionados para a análise de sensibilidade multi-família do
-    # Capítulo 6 (secção 6.6.4): diversidade de famílias (Meta, Google,
+    # Capítulo 6 (secção 6.6.4): diversidade de famílias (Meta, IBM,
     # Microsoft, Alibaba) em vez de comparar só variantes Qwen. O
     # Llama-3.2-3B em particular aproxima o registry do modelo "Llama 3.2
     # (3B)" especificado na Tabela 14 do relatório (que antes só tinha o
     # Llama-3.2-1B disponível).
+    #
+    # NOTA: o Google Gemma-2-2B foi testado e EXCLUÍDO deste registry — o seu
+    # template de chat oficial rejeita explicitamente mensagens com role
+    # "system" (levanta "System role not supported"), incompatível com a
+    # forma como refine_query/filter_results/generate_summary constroem os
+    # prompts em llm.py (sempre system+user separados). Corrigir isto exigiria
+    # fundir o system prompt na mensagem de user especificamente para esse
+    # modelo — não implementado; ver discussão na sessão de avaliação do
+    # Capítulo 6. Substituído pelo Granite-3.0-2B (IBM), cujo template
+    # suporta system role nativamente.
     # ---------------------------------------------------------------------
     "Llama-3.2-3B (embutido, médio)": {
         "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF",
@@ -83,13 +93,14 @@ BUILTIN_MODELS: dict[str, dict] = {
         "size_label": "~2.0 GB",
         "desc": "Meta Llama, maior que o 1B embutido. Aproxima-se do modelo de referência da Tabela 14 do relatório.",
     },
-    "Gemma-2-2B (embutido, leve)": {
-        "repo_id": "bartowski/gemma-2-2b-it-GGUF",
-        "filename": "gemma-2-2b-it-Q4_K_M.gguf",
+    "Granite-3.0-2B (embutido, leve)": {
+        "repo_id": "bartowski/granite-3.0-2b-instruct-GGUF",
+        "filename": "granite-3.0-2b-instruct-Q4_K_M.gguf",
         "n_ctx": 8192,
         "max_tokens": 2048,
-        "size_label": "~1.7 GB",
-        "desc": "Família Google Gemma 2. Boa qualidade multilingue para o tamanho.",
+        "size_label": "~1.6 GB",
+        "desc": "Família IBM Granite. Template de chat com suporte nativo a system role "
+                "(ver nota abaixo sobre o Gemma-2, testado e removido por não o ter).",
     },
     "Phi-3.5-mini (embutido, médio)": {
         "repo_id": "bartowski/Phi-3.5-mini-instruct-GGUF",
