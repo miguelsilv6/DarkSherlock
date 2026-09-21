@@ -11,7 +11,11 @@ servidor externo, descarregados automaticamente na primeira utilização.
 
 Objetivo de design: "corre em qualquer máquina".
   - llama-cpp-python distribui wheels CPU pré-compiladas (sem GPU obrigatória).
-  - Os modelos do registry são minúsculos (0.5B–1.5B), cabendo em <2 GB de RAM.
+  - Os modelos do registry vão de 0.5B a ~3.8B (≈400 MB a ≈2.4 GB de download;
+    RAM em execução tipicamente 1.5-2× o tamanho do ficheiro, pela sobrecarga
+    do KV cache) — os mais pesados (Llama-3.2-3B, Phi-3.5-mini) pedem uma
+    máquina com pelo menos 4-6 GB de RAM livre, os restantes correm em
+    qualquer portátil comum.
   - O download (via huggingface_hub) é feito uma única vez para `MODELS_DIR`.
 
 Os imports de `llama_cpp` e `huggingface_hub` são TARDIOS (dentro das funções)
@@ -62,6 +66,38 @@ BUILTIN_MODELS: dict[str, dict] = {
         "max_tokens": 2048,
         "size_label": "~0.8 GB",
         "desc": "Alternativa Meta Llama. Bom equilíbrio tamanho/qualidade.",
+    },
+    # ---------------------------------------------------------------------
+    # Modelos adicionados para a análise de sensibilidade multi-família do
+    # Capítulo 6 (secção 6.6.4): diversidade de famílias (Meta, Google,
+    # Microsoft, Alibaba) em vez de comparar só variantes Qwen. O
+    # Llama-3.2-3B em particular aproxima o registry do modelo "Llama 3.2
+    # (3B)" especificado na Tabela 14 do relatório (que antes só tinha o
+    # Llama-3.2-1B disponível).
+    # ---------------------------------------------------------------------
+    "Llama-3.2-3B (embutido, médio)": {
+        "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+        "filename": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+        "n_ctx": 8192,
+        "max_tokens": 2048,
+        "size_label": "~2.0 GB",
+        "desc": "Meta Llama, maior que o 1B embutido. Aproxima-se do modelo de referência da Tabela 14 do relatório.",
+    },
+    "Gemma-2-2B (embutido, leve)": {
+        "repo_id": "bartowski/gemma-2-2b-it-GGUF",
+        "filename": "gemma-2-2b-it-Q4_K_M.gguf",
+        "n_ctx": 8192,
+        "max_tokens": 2048,
+        "size_label": "~1.7 GB",
+        "desc": "Família Google Gemma 2. Boa qualidade multilingue para o tamanho.",
+    },
+    "Phi-3.5-mini (embutido, médio)": {
+        "repo_id": "bartowski/Phi-3.5-mini-instruct-GGUF",
+        "filename": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+        "n_ctx": 8192,
+        "max_tokens": 2048,
+        "size_label": "~2.4 GB",
+        "desc": "Família Microsoft Phi. 3.8B parâmetros, treinado para forte capacidade de raciocínio relativa ao tamanho.",
     },
 }
 
