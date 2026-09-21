@@ -96,11 +96,23 @@ BUILTIN_MODELS: dict[str, dict] = {
     "Granite-3.0-2B (embutido, leve)": {
         "repo_id": "bartowski/granite-3.0-2b-instruct-GGUF",
         "filename": "granite-3.0-2b-instruct-Q4_K_M.gguf",
-        "n_ctx": 8192,
+        # n_ctx=4096 (não 8192 como os outros) porque este é o context window
+        # NATIVO de treino do Granite 3.0 — usar 8192 corre sem erro mas emite
+        # "possible training context overflow" (llama.cpp) e processa posições
+        # além do que o modelo foi treinado a lidar, o que pode degradar a
+        # qualidade da análise sem gerar nenhum erro visível. Consequência
+        # aceite: com generate_summary a enviar até ~12k caracteres de
+        # conteúdo, investigações com muitas fontes podem agora falhar por
+        # excesso de contexto em vez de produzirem uma análise pouco fiável
+        # — comportamento mais correto para uma comparação justa entre
+        # modelos (EQ-04), mesmo que isso signifique mais falhas registadas
+        # para este modelo especificamente.
+        "n_ctx": 4096,
         "max_tokens": 2048,
         "size_label": "~1.6 GB",
         "desc": "Família IBM Granite. Template de chat com suporte nativo a system role "
-                "(ver nota abaixo sobre o Gemma-2, testado e removido por não o ter).",
+                "(ver nota sobre o Gemma-2, testado e removido por não o ter). "
+                "Context window nativo de só 4096 tokens — pode falhar em investigações com muitas fontes.",
     },
     "Phi-3.5-mini (embutido, médio)": {
         "repo_id": "bartowski/Phi-3.5-mini-instruct-GGUF",
