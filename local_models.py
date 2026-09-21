@@ -69,21 +69,35 @@ BUILTIN_MODELS: dict[str, dict] = {
     },
     # ---------------------------------------------------------------------
     # Modelos adicionados para a análise de sensibilidade multi-família do
-    # Capítulo 6 (secção 6.6.4): diversidade de famílias (Meta, IBM,
-    # Microsoft, Alibaba) em vez de comparar só variantes Qwen. O
-    # Llama-3.2-3B em particular aproxima o registry do modelo "Llama 3.2
-    # (3B)" especificado na Tabela 14 do relatório (que antes só tinha o
-    # Llama-3.2-1B disponível).
+    # Capítulo 6 (secção 6.6.4): diversidade de famílias (Meta, Microsoft,
+    # Alibaba) em vez de comparar só variantes Qwen. O Llama-3.2-3B em
+    # particular aproxima o registry do modelo "Llama 3.2 (3B)" especificado
+    # na Tabela 14 do relatório (que antes só tinha o Llama-3.2-1B
+    # disponível).
     #
-    # NOTA: o Google Gemma-2-2B foi testado e EXCLUÍDO deste registry — o seu
-    # template de chat oficial rejeita explicitamente mensagens com role
-    # "system" (levanta "System role not supported"), incompatível com a
-    # forma como refine_query/filter_results/generate_summary constroem os
-    # prompts em llm.py (sempre system+user separados). Corrigir isto exigiria
-    # fundir o system prompt na mensagem de user especificamente para esse
-    # modelo — não implementado; ver discussão na sessão de avaliação do
-    # Capítulo 6. Substituído pelo Granite-3.0-2B (IBM), cujo template
-    # suporta system role nativamente.
+    # DOIS MODELOS FORAM TESTADOS E REJEITADOS antes de fechar este registry
+    # em 5 (não os 6 originalmente planeados) — documentado aqui para que
+    # não sejam re-adicionados sem se saber que já foram tentados:
+    #
+    #   - Google Gemma-2-2B: o seu template de chat oficial rejeita
+    #     explicitamente mensagens com role "system" (levanta "System role
+    #     not supported"), incompatível com a forma como
+    #     refine_query/filter_results/generate_summary constroem os prompts
+    #     em llm.py (sempre system+user separados). Corrigir isto exigiria
+    #     fundir o system prompt na mensagem de user especificamente para
+    #     esse modelo — não implementado.
+    #
+    #   - IBM Granite-3.0-2B: aceita system role, mas o seu context window
+    #     nativo de treino é só 4096 tokens. Testado com n_ctx=4096 (fiel ao
+    #     treino, para evitar degradação silenciosa de qualidade por
+    #     "training context overflow"): falhou em TODOS os cenários testados
+    #     (não só nos mais pesados) com "Requested tokens exceed context
+    #     window of 4096", porque generate_summary já reserva 2048 tokens
+    #     para a resposta + envia até ~12k caracteres (~3-4k tokens) de
+    #     conteúdo — o desenho da app já ultrapassa 4096 tokens totais na
+    #     maioria das investigações não triviais. Dar-lhe um orçamento de
+    #     conteúdo/resposta menor só para ele tornaria a comparação de
+    #     qualidade entre modelos (EQ-04) injusta na direção oposta.
     # ---------------------------------------------------------------------
     "Llama-3.2-3B (embutido, médio)": {
         "repo_id": "bartowski/Llama-3.2-3B-Instruct-GGUF",
@@ -92,27 +106,6 @@ BUILTIN_MODELS: dict[str, dict] = {
         "max_tokens": 2048,
         "size_label": "~2.0 GB",
         "desc": "Meta Llama, maior que o 1B embutido. Aproxima-se do modelo de referência da Tabela 14 do relatório.",
-    },
-    "Granite-3.0-2B (embutido, leve)": {
-        "repo_id": "bartowski/granite-3.0-2b-instruct-GGUF",
-        "filename": "granite-3.0-2b-instruct-Q4_K_M.gguf",
-        # n_ctx=4096 (não 8192 como os outros) porque este é o context window
-        # NATIVO de treino do Granite 3.0 — usar 8192 corre sem erro mas emite
-        # "possible training context overflow" (llama.cpp) e processa posições
-        # além do que o modelo foi treinado a lidar, o que pode degradar a
-        # qualidade da análise sem gerar nenhum erro visível. Consequência
-        # aceite: com generate_summary a enviar até ~12k caracteres de
-        # conteúdo, investigações com muitas fontes podem agora falhar por
-        # excesso de contexto em vez de produzirem uma análise pouco fiável
-        # — comportamento mais correto para uma comparação justa entre
-        # modelos (EQ-04), mesmo que isso signifique mais falhas registadas
-        # para este modelo especificamente.
-        "n_ctx": 4096,
-        "max_tokens": 2048,
-        "size_label": "~1.6 GB",
-        "desc": "Família IBM Granite. Template de chat com suporte nativo a system role "
-                "(ver nota sobre o Gemma-2, testado e removido por não o ter). "
-                "Context window nativo de só 4096 tokens — pode falhar em investigações com muitas fontes.",
     },
     "Phi-3.5-mini (embutido, médio)": {
         "repo_id": "bartowski/Phi-3.5-mini-instruct-GGUF",
