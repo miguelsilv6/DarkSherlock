@@ -263,6 +263,7 @@ def save_investigation(
     active_engines: list = None,
     integrity: dict = None,
     scraped_content: dict = None,
+    engine_status: dict = None,
 ) -> str:
     """Guarda uma investigação completa em disco no formato JSON. Retorna o nome do ficheiro.
 
@@ -276,6 +277,8 @@ def save_investigation(
       para recalcular e comparar mais tarde, o que invalida a própria ideia
       de cadeia de custódia (o conteúdo que gerou o hash tem de sobreviver
       ao fim da sessão Streamlit, não só o hash em si).
+    - engine_status: {nome_do_motor: "ok"|"failed"} desta execução — usado
+      na métrica de resiliência EQ-06 (Capítulo 6, secção 6.4.6).
     """
     INVESTIGATIONS_DIR.mkdir(exist_ok=True)
     # chmod 700: investigações contêm conteúdo dark web sensível (IOCs, PII,
@@ -306,6 +309,7 @@ def save_investigation(
         # — permite recalcular e verificar cada hash em "integrity" mais tarde,
         # de forma independente desta sessão.
         "scraped_content": scraped_content or {},
+        "engine_status": engine_status or {},
     }
     fpath = INVESTIGATIONS_DIR / fname
     fpath.write_text(
@@ -379,7 +383,9 @@ def cached_search_results(refined_query: str):
         refined_query: Consulta refinada pelo LLM.
 
     Returns:
-        Lista de resultados brutos (dicionários com `title` e `link`).
+        tuple[list[dict], dict[str, str]]: resultados brutos (dicionários
+        com `title` e `link`) e o estado por motor ("ok"/"failed"), usado
+        para a métrica de resiliência EQ-06 (Capítulo 6, secção 6.4.6).
     """
     # A query passa intacta — o encoding URL é feito em `fetch_search_results`
     # (search.py) para engines simples. Adapters (DarkForums, …) recebem a
@@ -758,7 +764,7 @@ if run_button and query:
         t0 = time.time()
         # search.py já deduplica os resultados por URL — não é necessário
         # repetir o processo aqui. A deduplicação dupla era redundante e O(2n).
-        st.session_state.results = cached_search_results(st.session_state.refined)
+        st.session_state.results, st.session_state.engine_status = cached_search_results(st.session_state.refined)
 
         # Aplica o limite máximo de resultados configurado na barra lateral
         if len(st.session_state.results) > max_results:
@@ -1017,9 +1023,11 @@ if run_button and query:
         active_engines=[e["name"] for e in active_engines],
         integrity=integrity,
         scraped_content=st.session_state.get("scraped", {}),
+        engine_status=st.session_state.get("engine_status", {}),
     )
 
     # Registar no log de auditoria
+    _engine_status = st.session_state.get("engine_status", {})
     log_investigation({
         "audit_id": audit_id,
         "query": query,
@@ -1033,6 +1041,11 @@ if run_button and query:
         "summary_length_chars": len(st.session_state.streamed_summary),
         "pipeline_duration_ms": pipeline_ms,
         "errors": [],
+        # EQ-06 (Capítulo 6, secção 6.4.6) — "Tolerância a motores caídos":
+        # nº de motores efetivamente tentados vs quantos falharam (timeout,
+        # status != 200, ou excepção de rede/circuito Tor).
+        "engines_attempted": len(_engine_status),
+        "engines_failed": sum(1 for v in _engine_status.values() if v == "failed"),
     })
 
     st.success(f"Pipeline completed in {_fmt_ms(pipeline_ms)} — saved as `{_fname}`")

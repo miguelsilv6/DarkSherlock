@@ -68,9 +68,16 @@ def load_investigations():
 
 def save_investigation(
     query, refined_query, model_name, preset_label, sources, summary,
-    audit_id="", active_engines=None, integrity=None,
+    audit_id="", active_engines=None, integrity=None, scraped_content=None,
+    engine_status=None,
 ):
-    """Guarda investigação completa com campos forenses (hashes, timestamps, audit_id)."""
+    """Guarda investigação completa com campos forenses (hashes, timestamps, audit_id).
+
+    scraped_content: texto scrapeado {url: conteúdo} tal como foi passado a
+    compute_integrity_hashes() — sem isto os hashes em "integrity" não são
+    verificáveis depois (ver EQ-05.2, Capítulo 6). engine_status: estado por
+    motor de pesquisa ("ok"/"failed") desta execução, para EQ-06.
+    """
     INVESTIGATIONS_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     fname = f"investigation_{timestamp}.json"
@@ -86,6 +93,8 @@ def save_investigation(
         "sources": sources,
         "summary": summary,
         "integrity": integrity or {},
+        "scraped_content": scraped_content or {},
+        "engine_status": engine_status or {},
     }
     (INVESTIGATIONS_DIR / fname).write_text(
         json.dumps(data, indent=2, ensure_ascii=False),
@@ -301,7 +310,7 @@ if run_button and query:
         # repetir o processo aqui. A deduplicação dupla era redundante e O(2n).
         # Query passa intacta — encoding URL é feito em `fetch_search_results`
         # para engines simples; adapters recebem a query original.
-        st.session_state.results = get_search_results(
+        st.session_state.results, st.session_state.engine_status = get_search_results(
             st.session_state.refined, max_workers=threads
         )
         if len(st.session_state.results) > max_results:
@@ -452,8 +461,11 @@ if run_button and query:
         audit_id=audit_id,
         active_engines=[e["name"] for e in active_engines],
         integrity=integrity,
+        scraped_content=meaningful_scraped,
+        engine_status=st.session_state.get("engine_status", {}),
     )
 
+    _engine_status = st.session_state.get("engine_status", {})
     log_investigation({
         "audit_id": audit_id,
         "query": query,
@@ -467,6 +479,8 @@ if run_button and query:
         "summary_length_chars": len(st.session_state.streamed_summary),
         "pipeline_duration_ms": pipeline_ms,
         "errors": [],
+        "engines_attempted": len(_engine_status),
+        "engines_failed": sum(1 for v in _engine_status.values() if v == "failed"),
     })
 
     st.success(f"Pipeline completed in {_fmt_ms(pipeline_ms)} — saved as `{_fname}`")
