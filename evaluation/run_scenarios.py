@@ -226,6 +226,11 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         "sources": filtered,
         "summary": summary,
         "integrity": integrity,
+        # Conteúdo bruto por fonte, tal como foi passado a compute_integrity_hashes()
+        # — sem isto os hashes em "integrity" não seriam verificáveis depois
+        # (mesmo esquema usado por Home.py/save_investigation, para EQ-05.2
+        # do Capítulo 6 poder recalcular e comparar).
+        "scraped_content": meaningful,
         "scenario_id": scenario["id"],   # extra: rastreável ao cenário do Cap. 6
         "domain": scenario["domain"],
     }
