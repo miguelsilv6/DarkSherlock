@@ -9,6 +9,39 @@ from search import SEARCH_ENGINES as _BUILTIN_ENGINES
 CONFIG_DIR = Path("config")
 CONFIG_FILE = CONFIG_DIR / "search_engines.json"
 
+# Motores confirmados como permanentemente mortos por instrumentação real
+# (evaluation/analyze_engine_failures.py, EQ-06: 100% de falhas em n=6 cada).
+# Marcá-los com "default_enabled": False em SEARCH_ENGINES só afecta novas
+# instalações (a semente inicial) — instalações já existentes têm
+# config/search_engines.json persistido com "enabled": true para estes
+# motores e nunca seriam corrigidas sem esta migração explícita.
+_DEAD_ENGINE_URLS = {
+    e["url"] for e in _BUILTIN_ENGINES if e.get("default_enabled") is False
+    and e["name"] in {"Kaizer", "Anima", "Tornado"}
+}
+_DEAD_ENGINES_MARKER = CONFIG_DIR / ".dead_engines_migrated"
+
+
+def _migrate_dead_engines(engines: List[Dict]) -> bool:
+    """Desactiva, uma única vez por instalação, os motores em _DEAD_ENGINE_URLS.
+
+    Usa um ficheiro-marcador em vez de repetir a migração a cada load_engines():
+    se o utilizador reactivar manualmente um destes motores depois da migração,
+    essa escolha deve persistir — não pode ser revertida na próxima leitura.
+    """
+    if _DEAD_ENGINES_MARKER.exists():
+        return False
+
+    changed = False
+    for e in engines:
+        if e.get("url") in _DEAD_ENGINE_URLS and e.get("enabled", True):
+            e["enabled"] = False
+            changed = True
+
+    CONFIG_DIR.mkdir(exist_ok=True)
+    _DEAD_ENGINES_MARKER.write_text("1", encoding="utf-8")
+    return changed
+
 
 def _seed_engines() -> List[Dict]:
     """Cria a lista inicial de engines a partir dos builtins.
@@ -49,6 +82,7 @@ def load_engines() -> List[Dict]:
     """
     if not CONFIG_FILE.exists():
         engines = _seed_engines()
+        _migrate_dead_engines(engines)  # marca o migrador como já aplicado
         save_engines(engines)
         return engines
 
@@ -57,6 +91,7 @@ def load_engines() -> List[Dict]:
         engines = data.get("engines", [])
     except (json.JSONDecodeError, OSError):
         engines = _seed_engines()
+        _migrate_dead_engines(engines)
         save_engines(engines)
         return engines
 
@@ -80,7 +115,9 @@ def load_engines() -> List[Dict]:
             engines.append(entry)
             new_engines_added = True
 
-    if new_engines_added:
+    dead_engines_migrated = _migrate_dead_engines(engines)
+
+    if new_engines_added or dead_engines_migrated:
         save_engines(engines)
 
     return engines
