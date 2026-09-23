@@ -262,6 +262,7 @@ def save_investigation(
     audit_id: str = "",
     active_engines: list = None,
     integrity: dict = None,
+    scraped_content: dict = None,
 ) -> str:
     """Guarda uma investigação completa em disco no formato JSON. Retorna o nome do ficheiro.
 
@@ -270,6 +271,11 @@ def save_investigation(
     - timestamp_utc: timestamp em UTC para correlação temporal
     - active_engines: engines utilizadas na pesquisa
     - integrity: hashes SHA-256 por fonte e hash global (cadeia de custódia)
+    - scraped_content: texto scrapeado {url: conteúdo} tal como foi hashado.
+      Sem isto, os hashes em `integrity` seriam uma promessa vazia — nada
+      para recalcular e comparar mais tarde, o que invalida a própria ideia
+      de cadeia de custódia (o conteúdo que gerou o hash tem de sobreviver
+      ao fim da sessão Streamlit, não só o hash em si).
     """
     INVESTIGATIONS_DIR.mkdir(exist_ok=True)
     # chmod 700: investigações contêm conteúdo dark web sensível (IOCs, PII,
@@ -296,6 +302,10 @@ def save_investigation(
         "summary": summary,
         # Cadeia de custódia digital (hashes SHA-256)
         "integrity": integrity or {},
+        # Conteúdo bruto por fonte, tal como foi passado a compute_integrity_hashes()
+        # — permite recalcular e verificar cada hash em "integrity" mais tarde,
+        # de forma independente desta sessão.
+        "scraped_content": scraped_content or {},
     }
     fpath = INVESTIGATIONS_DIR / fname
     fpath.write_text(
@@ -1006,6 +1016,7 @@ if run_button and query:
         audit_id=audit_id,
         active_engines=[e["name"] for e in active_engines],
         integrity=integrity,
+        scraped_content=st.session_state.get("scraped", {}),
     )
 
     # Registar no log de auditoria
