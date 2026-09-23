@@ -177,7 +177,7 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
     # Etapa 3 — Pesquisa via Tor
     t0 = time.time()
     active_engines = [e["name"] for e in get_active_engines()]
-    results = get_search_results(refined, max_workers=THREADS)
+    results, engine_status = get_search_results(refined, max_workers=THREADS)
     if len(results) > MAX_RESULTS:
         results = results[:MAX_RESULTS]
     retrieved_at = datetime.now(timezone.utc).isoformat()
@@ -231,6 +231,9 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         # (mesmo esquema usado por Home.py/save_investigation, para EQ-05.2
         # do Capítulo 6 poder recalcular e comparar).
         "scraped_content": meaningful,
+        # Estado por motor de pesquisa ("ok"/"failed") desta execução — EQ-06
+        # (Capítulo 6, secção 6.4.6, "Tolerância a motores caídos").
+        "engine_status": engine_status,
         "scenario_id": scenario["id"],   # extra: rastreável ao cenário do Cap. 6
         "domain": scenario["domain"],
     }
@@ -254,6 +257,8 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         "pipeline_duration_ms": total_ms,
         "errors": errors,
         "scenario_id": scenario["id"],
+        "engines_attempted": len(engine_status),
+        "engines_failed": sum(1 for v in engine_status.values() if v == "failed"),
     })
 
     return {
@@ -267,6 +272,8 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         "results_scraped": len(meaningful),
         "summary_length_chars": len(summary),
         "total_ms": total_ms,
+        "engines_attempted": len(engine_status),
+        "engines_failed": sum(1 for v in engine_status.values() if v == "failed"),
         **{f"{k}_ms": v for k, v in timings_ms.items()},
     }
 

@@ -221,8 +221,14 @@ def fetch_search_results(endpoint, query, session=None):
             multiplicado pelo número de motores pesquisados em paralelo.
 
     Retorna:
-        list[dict]: lista de dicionários {"title": str, "link": str},
-                    ou lista vazia em caso de falha ou ausência de resultados.
+        tuple[list[dict], bool]: (resultados, motor_respondeu_com_sucesso).
+        `motor_respondeu_com_sucesso` distingue "o motor respondeu 200 OK"
+        (mesmo que 0 links tenham sido extraídos — o motor está vivo, só não
+        teve resultados) de "falha técnica" (timeout, excepção de rede,
+        circuito Tor degradado, ou qualquer status HTTP != 200) — é esta
+        distinção que EQ-06 (Capítulo 6, "Tolerância a motores caídos")
+        precisa para calcular a fração de motores que falharam, e que antes
+        não existia: ambos os casos devolviam apenas `[]`, indistinguíveis.
     """
     # Substituição do placeholder {query} no template de URL do motor.
     # quote_plus codifica espaços como '+' e escapa caracteres reservados — o
@@ -281,15 +287,15 @@ def fetch_search_results(endpoint, query, session=None):
                     # inesperados — erros individuais não devem travar o loop.
                     continue
 
-            return links
+            return links, True
         else:
-            # Código HTTP diferente de 200 (ex.: 403, 404, 503) —
-            # devolver lista vazia sem lançar excepção.
-            return []
+            # Código HTTP diferente de 200 (ex.: 403, 404, 503) — falha
+            # técnica do motor, devolver lista vazia sem lançar excepção.
+            return [], False
     except:
         # Qualquer excepção de rede (timeout, recusa de ligação, erro SSL,
-        # circuito Tor falhado) resulta em lista vazia para esta thread.
-        return []
+        # circuito Tor falhado) é uma falha técnica do motor.
+        return [], False
 
 
 _RE_ONION_DOMAIN = re.compile(r'https?://([a-z0-9.]+\.onion)')
@@ -307,7 +313,12 @@ def get_search_results(refined_query, max_workers=5):
         max_workers (int): número máximo de threads concorrentes. Padrão: 5.
 
     Retorna:
-        list[dict]: lista deduplicada e filtrada de resultados.
+        tuple[list[dict], dict[str, str]]:
+          - lista deduplicada e filtrada de resultados;
+          - engine_status: {nome_do_motor: "ok" | "failed"} para cada motor
+            efetivamente tentado (motores de fórum não configurados, que
+            nunca chegam a ser tentados, ficam de fora). Alimenta a métrica
+            "Tolerância a motores caídos" do EQ-06 (Capítulo 6, secção 6.4.6).
     """
     from engine_manager import get_active_engines
     active_engines = get_active_engines()
@@ -330,16 +341,21 @@ def get_search_results(refined_query, max_workers=5):
             engine_domains.add(m.group(1))
 
     results = []
+    engine_status: dict[str, str] = {}
 
     shared_session = get_tor_session() if active_urls else None
 
     if active_urls:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(fetch_search_results, endpoint, refined_query, shared_session)
-                       for endpoint in active_urls]
+            future_to_name = {
+                executor.submit(fetch_search_results, e["url"], refined_query, shared_session): e["name"]
+                for e in simple_engines
+            }
 
-            for future in as_completed(futures):
-                result_urls = future.result()
+            for future in as_completed(future_to_name):
+                name = future_to_name[future]
+                result_urls, ok = future.result()
+                engine_status[name] = "ok" if ok else "failed"
                 results.extend(result_urls)
 
     # Despacho para forum adapters (sequencial — cada adapter gere o seu rate
@@ -356,8 +372,11 @@ def get_search_results(refined_query, max_workers=5):
                     continue
                 try:
                     results.extend(adapter.search(refined_query))
+                    engine_status[engine["name"]] = "ok"
                 except Exception:
-                    # Falhas de um fórum não devem partir o resto da pesquisa.
+                    # Falhas de um fórum não devem partir o resto da pesquisa,
+                    # mas o motor conta como falhado para efeitos de EQ-06.
+                    engine_status[engine["name"]] = "failed"
                     continue
 
     # Deduplicação + exclusão de meta-resultados (search engine pages)
@@ -379,4 +398,4 @@ def get_search_results(refined_query, max_workers=5):
         seen_links.add(clean_link)
         unique_results.append(res)
 
-    return unique_results
+    return unique_results, engine_status
