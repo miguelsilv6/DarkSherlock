@@ -44,6 +44,7 @@ RESULTS_DIR = Path(__file__).resolve().parent / "results"
 FALLBACK_MARKERS = (
     "refine_fallback", "filter_llm_call_failed", "filter_retry_failed_top20",
     "filter_unparseable_top20", "filter_none_keyword_override", "relevance_filter_kept_all",
+    "relevance_filter_relaxed",
 )
 ETAPA4_NO_RANKING_FLAGS = ("filter_retry_failed_top20", "filter_unparseable_top20")
 

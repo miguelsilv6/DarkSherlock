@@ -627,14 +627,30 @@ def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int
     relação com a query de investigação. Sem esta etapa, o LLM recebe
     conteúdo irrelevante e produz sumários descontextualizados.
 
-    Se a filtragem remover TODOS os resultados, devolve o dict original
-    para evitar perder toda a análise (melhor ter algo genérico do que nada).
+    O critério é aplicado de forma progressiva, em vez de tudo-ou-nada:
+      1. Critério estrito: fontes com pelo menos `min_keyword_hits` keywords.
+      2. Se nenhuma fonte o cumprir, critério relaxado: fontes com pelo menos
+         1 keyword (um critério mais fraco continua a ser mais seletivo do
+         que nenhum critério).
+      3. Se nenhuma fonte tiver sequer 1 keyword, devolve o dict original
+         para evitar perder toda a análise (melhor ter algo genérico do que
+         nada).
+
+    Porquê relaxar antes de desistir: numa bateria de 400 execuções, o filtro
+    estrito foi anulado em 150 de 150 execuções nos cenários B1, B2 e C1,
+    qualquer que fosse o modelo — ou seja, o filtro não tinha efeito algum
+    nesses cenários. Em C1 a causa é estrutural: o email da query
+    ("john.doe@example-corp.test") conta como uma única keyword que tem de
+    aparecer tal e qual no texto, e exigir 2 keywords obrigava a que
+    aparecesse com "breach". Uma query de 2 keywords em que uma é um
+    identificador raro nunca satisfaz o critério estrito.
 
     Parâmetros:
         query (str): Query de pesquisa original do utilizador.
         scraped (dict): Dicionário {url: texto_scrapeado}.
         min_keyword_hits (int): Número mínimo de keywords da query que devem
-                                aparecer no conteúdo para ser considerado relevante.
+                                aparecer no conteúdo para ser considerado relevante
+                                no critério estrito.
 
     Devolve:
         dict: Subconjunto do dict original contendo apenas fontes relevantes.
@@ -649,25 +665,38 @@ def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int
     # páginas off-topic (ex.: diretórios .onion num relatório de ransomware).
     required = min(min_keyword_hits, len(keywords))
 
-    relevant = {}
-    for url, content in scraped.items():
-        content_lower = content.lower()
-        hits = sum(1 for kw in keywords if kw in content_lower)
-        if hits >= required:
-            relevant[url] = content
+    def _select(min_hits: int) -> dict:
+        selected = {}
+        for url, content in scraped.items():
+            content_lower = content.lower()
+            hits = sum(1 for kw in keywords if kw in content_lower)
+            if hits >= min_hits:
+                selected[url] = content
+        return selected
 
-    # Se a filtragem removeu TUDO, devolve o original para não perder toda a análise
+    relevant = _select(required)
     if relevant:
         logger.info(
             "Post-scrape relevance filter: %d/%d sources kept (query: %s)",
             len(relevant), len(scraped), query[:60],
         )
-    else:
-        logger.warning(
-            "Post-scrape relevance filter removed ALL %d sources — keeping originals (query: %s)",
-            len(scraped), query[:60],
-        )
-    return relevant if relevant else scraped
+        return relevant
+
+    if required > 1:
+        relaxed = _select(1)
+        if relaxed:
+            logger.warning(
+                "Post-scrape relevance filter relaxed to 1 keyword — no source reached %d "
+                "(%d/%d sources kept, query: %s)",
+                required, len(relaxed), len(scraped), query[:60],
+            )
+            return relaxed
+
+    logger.warning(
+        "Post-scrape relevance filter removed ALL %d sources — keeping originals (query: %s)",
+        len(scraped), query[:60],
+    )
+    return scraped
 
 
 # Limites de truncagem de conteúdo enviado ao LLM, expostos como constantes

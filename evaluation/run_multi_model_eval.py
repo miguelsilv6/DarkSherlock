@@ -79,6 +79,10 @@ FALLBACK_MARKERS = {
     "filter_unparseable_top20": "Unable to interpret LLM result selection",
     "filter_none_keyword_override": "LLM filter respondeu NONE mas",
     "relevance_filter_kept_all": "Post-scrape relevance filter removed ALL",
+    # Critério relaxado para 1 keyword (llm.filter_scraped_by_relevance): o
+    # filtro continuou ativo, ao contrário de "kept_all". Colunas ausentes em
+    # CSVs anteriores a esta alteração, que usavam o filtro estrito tudo-ou-nada.
+    "relevance_filter_relaxed": "Post-scrape relevance filter relaxed",
 }
 
 # Fallbacks que significam "nenhum ranking real do LLM aconteceu nesta
