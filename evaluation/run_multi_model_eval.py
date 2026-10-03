@@ -123,6 +123,22 @@ def run_one_with_capture(scenario: dict, model_choice: str, llm) -> dict:
     return row
 
 
+def _etapa5_counts(rows: list[dict]) -> tuple[int, int, int]:
+    """Devolve (anulado, relaxado, sem_fontes) para um conjunto de execuções.
+
+    "anulado" = o filtro manteve todas as fontes, mesmo após relaxar para 1
+    keyword; inclui as execuções sem nenhuma fonte raspada, em que o filtro
+    não tinha o que avaliar. "sem_fontes" isola essas (anulado e 0 fontes);
+    "relaxado" = o filtro ficou ativo só com o critério de 1 keyword.
+    """
+    kept_all = sum(1 for r in rows if r.get("relevance_filter_kept_all"))
+    relaxed = sum(1 for r in rows if r.get("relevance_filter_relaxed"))
+    no_sources = sum(
+        1 for r in rows if r.get("relevance_filter_kept_all") and r.get("results_scraped", 0) == 0
+    )
+    return kept_all, relaxed, no_sources
+
+
 def _write_reliability_summary(path: Path, models: list[str], scenarios: list[dict], all_rows: list[dict]) -> None:
     """Escreve um Markdown com o resumo de fiabilidade (tempos + taxas de fallback) por modelo e por cenário×modelo."""
     lines = ["# Resumo de fiabilidade — avaliação multi-modelo\n"]
@@ -130,29 +146,39 @@ def _write_reliability_summary(path: Path, models: list[str], scenarios: list[di
     lines.append("## Visão global por modelo (todas as execuções, todos os cenários)\n")
     lines.append(
         "| Modelo | Execuções OK | Falhas | Média total (s) | DP total (s) | "
-        "Média fontes | Etapa 4 sem ranking (%) | Etapa 5 filtro anulado (%) |"
+        "Média fontes | Etapa 4 sem ranking (%) | Etapa 5 filtro anulado (%) | "
+        "Etapa 5 relaxado (%) | Etapa 5 sem fontes (%) |"
     )
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
     for model in models:
         rows = [r for r in all_rows if r.get("model") == model and "total_ms" in r]
         failed = [r for r in all_rows if r.get("model") == model and "error" in r]
         if not rows:
-            lines.append(f"| {model} | 0 | {len(failed)} | — | — | — | — | — |")
+            lines.append(f"| {model} | 0 | {len(failed)} | — | — | — | — | — | — | — |")
             continue
         times = [r["total_ms"] / 1000 for r in rows]
         mean_t = statistics.mean(times)
         stdev_t = statistics.stdev(times) if len(times) > 1 else 0.0
         mean_sources = statistics.mean(r["results_scraped"] for r in rows)
         etapa4_rate = 100 * sum(1 for r in rows if any(r.get(f) for f in ETAPA4_NO_RANKING_FLAGS)) / len(rows)
-        etapa5_rate = 100 * sum(1 for r in rows if r.get("relevance_filter_kept_all")) / len(rows)
+        kept_all, relaxed, no_sources = _etapa5_counts(rows)
         lines.append(
             f"| {model} | {len(rows)} | {len(failed)} | {mean_t:.1f} | {stdev_t:.1f} | "
-            f"{mean_sources:.1f} | {etapa4_rate:.0f}% | {etapa5_rate:.0f}% |"
+            f"{mean_sources:.1f} | {etapa4_rate:.0f}% | {100 * kept_all / len(rows):.0f}% | "
+            f"{100 * relaxed / len(rows):.0f}% | {100 * no_sources / len(rows):.0f}% |"
         )
 
+    lines.append(
+        "\n*Etapa 5 filtro anulado inclui as execuções «sem fontes» (nenhuma fonte raspada, filtro sem o que "
+        "avaliar); «relaxado» = filtro ativo apenas com o critério de 1 keyword.*"
+    )
+
     lines.append("\n## Detalhe por cenário × modelo\n")
-    lines.append("| Cenário | Modelo | Execuções | Média total (s) | DP (s) | Etapa 4 sem ranking | Etapa 5 filtro anulado |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append(
+        "| Cenário | Modelo | Execuções | Média total (s) | DP (s) | Etapa 4 sem ranking | "
+        "Etapa 5 filtro anulado | Etapa 5 relaxado | Etapa 5 sem fontes |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for scenario in scenarios:
         for model in models:
             rows = [
@@ -165,10 +191,11 @@ def _write_reliability_summary(path: Path, models: list[str], scenarios: list[di
             mean_t = statistics.mean(times)
             stdev_t = statistics.stdev(times) if len(times) > 1 else 0.0
             etapa4_hits = sum(1 for r in rows if any(r.get(f) for f in ETAPA4_NO_RANKING_FLAGS))
-            etapa5_hits = sum(1 for r in rows if r.get("relevance_filter_kept_all"))
+            kept_all, relaxed, no_sources = _etapa5_counts(rows)
             lines.append(
                 f"| {scenario['id']} | {model} | {len(rows)} | {mean_t:.1f} | {stdev_t:.1f} | "
-                f"{etapa4_hits}/{len(rows)} | {etapa5_hits}/{len(rows)} |"
+                f"{etapa4_hits}/{len(rows)} | {kept_all}/{len(rows)} | {relaxed}/{len(rows)} | "
+                f"{no_sources}/{len(rows)} |"
             )
 
     path.write_text("\n".join(lines), encoding="utf-8")
