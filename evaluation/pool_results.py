@@ -76,6 +76,19 @@ def load_rows(paths: list[str]) -> list[dict]:
     return rows
 
 
+def _etapa5_counts(rows: list[dict]) -> tuple[int, int, int]:
+    """(anulado, relaxado, sem_fontes). "anulado" inclui as execuções sem nenhuma fonte
+    raspada, em que o filtro não tinha o que avaliar; "sem_fontes" isola essas;
+    "relaxado" = filtro ativo só com o critério de 1 keyword. Duplicado
+    deliberadamente de run_multi_model_eval.py (ver nota sobre FALLBACK_MARKERS)."""
+    kept_all = sum(1 for r in rows if r.get("relevance_filter_kept_all"))
+    relaxed = sum(1 for r in rows if r.get("relevance_filter_relaxed"))
+    no_sources = sum(
+        1 for r in rows if r.get("relevance_filter_kept_all") and r.get("results_scraped", 0) == 0
+    )
+    return kept_all, relaxed, no_sources
+
+
 def write_pooled_summary(out_path: Path, rows: list[dict], source_files: list[str]) -> None:
     models = sorted({r["model"] for r in rows if r.get("model")})
     scenarios = sorted({r["scenario_id"] for r in rows if r.get("scenario_id")})
@@ -85,8 +98,11 @@ def write_pooled_summary(out_path: Path, rows: list[dict], source_files: list[st
     lines.append(f"Total de execuções agregadas: {len(rows)}\n")
 
     lines.append("## Visão global por modelo\n")
-    lines.append("| Modelo | n | Média total (s) | DP total (s) | Etapa 4 sem ranking (%) | Etapa 5 filtro anulado (%) |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append(
+        "| Modelo | n | Média total (s) | DP total (s) | Etapa 4 sem ranking (%) | "
+        "Etapa 5 filtro anulado (%) | Etapa 5 relaxado (%) | Etapa 5 sem fontes (%) |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|")
     for model in models:
         m_rows = [r for r in rows if r["model"] == model]
         if not m_rows:
@@ -95,14 +111,24 @@ def write_pooled_summary(out_path: Path, rows: list[dict], source_files: list[st
         mean_t = statistics.mean(times)
         stdev_t = statistics.stdev(times) if len(times) > 1 else 0.0
         etapa4_rate = 100 * sum(1 for r in m_rows if any(r.get(f) for f in ETAPA4_NO_RANKING_FLAGS)) / len(m_rows)
-        etapa5_rate = 100 * sum(1 for r in m_rows if r.get("relevance_filter_kept_all")) / len(m_rows)
+        kept_all, relaxed, no_sources = _etapa5_counts(m_rows)
         lines.append(
-            f"| {model} | {len(m_rows)} | {mean_t:.1f} | {stdev_t:.1f} | {etapa4_rate:.0f}% | {etapa5_rate:.0f}% |"
+            f"| {model} | {len(m_rows)} | {mean_t:.1f} | {stdev_t:.1f} | {etapa4_rate:.0f}% | "
+            f"{100 * kept_all / len(m_rows):.0f}% | {100 * relaxed / len(m_rows):.0f}% | "
+            f"{100 * no_sources / len(m_rows):.0f}% |"
         )
 
+    lines.append(
+        "\n*Etapa 5 filtro anulado inclui as execuções «sem fontes» (nenhuma fonte raspada, filtro sem o que "
+        "avaliar); «relaxado» = filtro ativo apenas com o critério de 1 keyword.*"
+    )
+
     lines.append("\n## Detalhe por cenário × modelo (com n real por célula)\n")
-    lines.append("| Cenário | Modelo | n | Média total (s) | DP (s) | Etapa 4 sem ranking | Etapa 5 filtro anulado |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append(
+        "| Cenário | Modelo | n | Média total (s) | DP (s) | Etapa 4 sem ranking | "
+        "Etapa 5 filtro anulado | Etapa 5 relaxado | Etapa 5 sem fontes |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for scenario in scenarios:
         for model in models:
             cell = [r for r in rows if r["scenario_id"] == scenario and r["model"] == model]
@@ -113,10 +139,10 @@ def write_pooled_summary(out_path: Path, rows: list[dict], source_files: list[st
             mean_t = statistics.mean(times)
             stdev_t = statistics.stdev(times) if n > 1 else 0.0
             etapa4_hits = sum(1 for r in cell if any(r.get(f) for f in ETAPA4_NO_RANKING_FLAGS))
-            etapa5_hits = sum(1 for r in cell if r.get("relevance_filter_kept_all"))
+            kept_all, relaxed, no_sources = _etapa5_counts(cell)
             lines.append(
                 f"| {scenario} | {model} | {n} | {mean_t:.1f} | {stdev_t:.1f} | "
-                f"{etapa4_hits}/{n} | {etapa5_hits}/{n} |"
+                f"{etapa4_hits}/{n} | {kept_all}/{n} | {relaxed}/{n} | {no_sources}/{n} |"
             )
 
     n_by_cell = {(r["scenario_id"], r["model"]) for r in rows}
