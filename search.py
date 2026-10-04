@@ -366,6 +366,10 @@ def get_search_results(refined_query, max_workers=5):
                 name = future_to_name[future]
                 result_urls, ok = future.result()
                 engine_status[name] = "ok" if ok else "failed"
+                # Proveniência: sem registar que motor devolveu cada fonte não é
+                # possível medir os "motores produtivos" do EQ-02 (Capítulo 6).
+                for r in result_urls:
+                    r["found_by"] = [name]
                 results.extend(result_urls)
 
     # Despacho para forum adapters (sequencial — cada adapter gere o seu rate
@@ -381,7 +385,10 @@ def get_search_results(refined_query, max_workers=5):
                 if adapter is None or not adapter.is_configured():
                     continue
                 try:
-                    results.extend(adapter.search(refined_query))
+                    forum_results = adapter.search(refined_query)
+                    for r in forum_results:
+                        r["found_by"] = [engine["name"]]
+                    results.extend(forum_results)
                     engine_status[engine["name"]] = "ok"
                 except Exception:
                     # Falhas de um fórum não devem partir o resto da pesquisa,
@@ -390,7 +397,10 @@ def get_search_results(refined_query, max_workers=5):
                     continue
 
     # Deduplicação + exclusão de meta-resultados (search engine pages)
-    seen_links = set()
+    # Ao deduplicar, os motores que devolveram a mesma fonte acumulam-se em
+    # "found_by" do primeiro resultado visto: um motor "devolveu" uma fonte
+    # mesmo que a cópia que ficou seja a de outro motor.
+    seen_links = {}
     unique_results = []
 
     for res in results:
@@ -398,6 +408,10 @@ def get_search_results(refined_query, max_workers=5):
         clean_link = link.rstrip('/')
 
         if clean_link in seen_links:
+            kept = seen_links[clean_link]
+            for engine_name in res.get("found_by", []):
+                if engine_name not in kept.setdefault("found_by", []):
+                    kept["found_by"].append(engine_name)
             continue
 
         # Excluir resultados cujo domínio pertence a um motor de pesquisa
@@ -405,7 +419,7 @@ def get_search_results(refined_query, max_workers=5):
         if m and m.group(1) in engine_domains:
             continue
 
-        seen_links.add(clean_link)
+        seen_links[clean_link] = res
         unique_results.append(res)
 
     return unique_results, engine_status

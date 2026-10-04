@@ -69,7 +69,7 @@ def load_investigations():
 def save_investigation(
     query, refined_query, model_name, preset_label, sources, summary,
     audit_id="", active_engines=None, integrity=None, scraped_content=None,
-    engine_status=None,
+    engine_status=None, search_results=None,
 ):
     """Guarda investigação completa com campos forenses (hashes, timestamps, audit_id).
 
@@ -77,6 +77,9 @@ def save_investigation(
     compute_integrity_hashes() — sem isto os hashes em "integrity" não são
     verificáveis depois (ver EQ-05.2, Capítulo 6). engine_status: estado por
     motor de pesquisa ("ok"/"failed") desta execução, para EQ-06.
+    search_results: lista completa de fontes recuperadas (antes do filtro por
+    LLM), cada uma com "found_by"; "sources" só guarda a lista filtrada, e sem
+    a completa o recall e os motores produtivos do EQ-02 não são mensuráveis.
     """
     INVESTIGATIONS_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -95,6 +98,7 @@ def save_investigation(
         "integrity": integrity or {},
         "scraped_content": scraped_content or {},
         "engine_status": engine_status or {},
+        "search_results": search_results or [],
     }
     (INVESTIGATIONS_DIR / fname).write_text(
         json.dumps(data, indent=2, ensure_ascii=False),
@@ -463,6 +467,7 @@ if run_button and query:
         integrity=integrity,
         scraped_content=meaningful_scraped,
         engine_status=st.session_state.get("engine_status", {}),
+        search_results=st.session_state.get("results", []),
     )
 
     _engine_status = st.session_state.get("engine_status", {})

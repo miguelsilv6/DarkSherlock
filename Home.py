@@ -264,6 +264,7 @@ def save_investigation(
     integrity: dict = None,
     scraped_content: dict = None,
     engine_status: dict = None,
+    search_results: list = None,
 ) -> str:
     """Guarda uma investigação completa em disco no formato JSON. Retorna o nome do ficheiro.
 
@@ -279,6 +280,11 @@ def save_investigation(
       ao fim da sessão Streamlit, não só o hash em si).
     - engine_status: {nome_do_motor: "ok"|"failed"} desta execução — usado
       na métrica de resiliência EQ-06 (Capítulo 6, secção 6.4.6).
+    - search_results: lista completa de fontes recuperadas pela pesquisa (antes
+      do filtro por LLM), cada uma com "found_by" (motores que a devolveram).
+      "sources" só guarda a lista já filtrada (até 20); sem a lista completa
+      não é possível medir o recall de recuperação nem os motores produtivos
+      do EQ-02 (Capítulo 6, secção 6.4.2).
     """
     INVESTIGATIONS_DIR.mkdir(exist_ok=True)
     # chmod 700: investigações contêm conteúdo dark web sensível (IOCs, PII,
@@ -310,6 +316,7 @@ def save_investigation(
         # de forma independente desta sessão.
         "scraped_content": scraped_content or {},
         "engine_status": engine_status or {},
+        "search_results": search_results or [],
     }
     fpath = INVESTIGATIONS_DIR / fname
     fpath.write_text(
@@ -1024,6 +1031,7 @@ if run_button and query:
         integrity=integrity,
         scraped_content=st.session_state.get("scraped", {}),
         engine_status=st.session_state.get("engine_status", {}),
+        search_results=st.session_state.get("results", []),
     )
 
     # Registar no log de auditoria

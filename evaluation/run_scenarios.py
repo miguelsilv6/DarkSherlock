@@ -224,6 +224,9 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         "preset": preset,
         "active_engines": active_engines,
         "sources": filtered,
+        # Lista completa de fontes recuperadas (antes do filtro por LLM), cada
+        # uma com "found_by": base do recall e dos motores produtivos de EQ-02.
+        "search_results": results,
         "summary": summary,
         "integrity": integrity,
         # Conteúdo bruto por fonte, tal como foi passado a compute_integrity_hashes()
