@@ -108,3 +108,11 @@ DarkSherlock, que corre 3× por cenário e reporta a média).
 Isto segue o mesmo princípio de `investigations/` e `logs/` no resto do
 projeto: dados gerados por uma execução real não são versionados; só a
 ferramenta e os templates em branco (`templates/`) o são.
+
+## Fontes recolhidas (EQ-02 e EQ-03)
+
+Além do relatório, regista-se, por cenário, **todas as fontes que o investigador viu** nas
+Etapas 2–3 (não só as escolhidas) em `reports/manual_sources_<ID>.csv`, com as colunas
+`url,title,engine,selected` (modelo em `templates/manual_sources_template.csv`).
+`selected = 1` marca as (até 20) fontes escolhidas na triagem, que formam o Top-20 manual.
+Estas listas alimentam `evaluation/eq02_eq03.py` (ver o cabeçalho desse ficheiro).
