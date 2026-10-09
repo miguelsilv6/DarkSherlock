@@ -55,10 +55,12 @@ Decisões de operacionalização (documentar na metodologia):
 Uso:
     python evaluation/eq02_eq03.py build --scenario A1 \\
         --darksherlock "investigations/eval_A1_*.json" \\
+        --model "Phi-3.5-mini (embutido, médio)" --since 20261009 \\
         --manual evaluation/baseline_manual/reports/manual_sources_A1.csv
     # os dois revisores preenchem review_A1_A.csv e review_A1_B.csv
     python evaluation/eq02_eq03.py analyze \\
         --investigations "investigations/eval_*.json" \\
+        --model "Phi-3.5-mini (embutido, médio)" --since 20261009 \\
         --manual-dir evaluation/baseline_manual/reports
 """
 
@@ -179,15 +181,27 @@ def _scenario_domain(scenario_id: str) -> str:
 # ---------------------------------------------------------------------------
 # Leitura das condições
 # ---------------------------------------------------------------------------
-def load_darksherlock_runs(pattern: str, scenario: str) -> list[dict]:
-    """Uma entrada por execução do DarkSherlock do cenário: retrieved, top20 (LLM), first20, found_by."""
+def _file_date(path: str) -> str:
+    m = re.search(r"_(\d{8})_\d{6}\.json$", path)
+    return m.group(1) if m else ""
+
+
+def load_darksherlock_runs(pattern: str, scenario: str, model: str | None = None, since: str = "00000000") -> list[dict]:
+    """Uma entrada por execução do DarkSherlock do cenário: retrieved, top20 (LLM), first20, found_by.
+
+    model: só execuções deste modelo (campo "model" da investigação); since: AAAAMMDD mínimo no nome do ficheiro.
+    """
     runs, skipped = [], 0
     for path in sorted(glob.glob(pattern)):
+        if since != "00000000" and _file_date(path) < since:
+            continue
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         if data.get("scenario_id") != scenario:
+            continue
+        if model is not None and data.get("model") != model:
             continue
         if "search_results" not in data:
             skipped += 1
@@ -236,10 +250,11 @@ def load_manual(path: Path) -> dict | None:
 # ---------------------------------------------------------------------------
 def cmd_build(args) -> int:
     scenario = args.scenario.upper()
-    runs = load_darksherlock_runs(args.darksherlock, scenario)
+    runs = load_darksherlock_runs(args.darksherlock, scenario, args.model, args.since)
     manual = load_manual(Path(args.manual))
     if not runs:
-        print(f"ERRO: nenhuma investigação do DarkSherlock com 'search_results' para {scenario} em {args.darksherlock}.")
+        print(f"ERRO: nenhuma investigação do DarkSherlock com 'search_results' para {scenario} em {args.darksherlock}"
+              f"{' (modelo ' + repr(args.model) + ')' if args.model else ''}.")
         return 1
     if manual is None:
         print(f"ERRO: ficheiro de fontes manuais não encontrado: {args.manual}")
@@ -370,11 +385,11 @@ def resolve_labels(scenario: str, gt_dir: Path, allow_unresolved: bool) -> tuple
 
 
 def analyze_scenario(scenario: str, gt_dir: Path, investigations: str, manual_dir: Path, allow_unresolved: bool,
-                     allow_unlabeled: bool) -> dict:
+                     allow_unlabeled: bool, model: str | None = None, since: str = "00000000") -> dict:
     final, pairs, unresolved, n_prelabeled = resolve_labels(scenario, gt_dir, allow_unresolved)
     relevant = {u for u, l in final.items() if l == "relevant"}
     inaccessible = {u for u, l in final.items() if l == "inaccessible"}
-    runs = load_darksherlock_runs(investigations, scenario)
+    runs = load_darksherlock_runs(investigations, scenario, model, since)
     manual = load_manual(manual_dir / f"manual_sources_{scenario}.csv")
     if not runs:
         raise ValueError(f"{scenario}: nenhuma execução do DarkSherlock com 'search_results'.")
@@ -535,7 +550,7 @@ def cmd_analyze(args) -> int:
     for sc in scenarios:
         try:
             results.append(analyze_scenario(sc, gt_dir, args.investigations, Path(args.manual_dir),
-                                            args.allow_unresolved, args.allow_unlabeled))
+                                            args.allow_unresolved, args.allow_unlabeled, args.model, args.since))
         except (ValueError, FileNotFoundError) as e:
             print(f"ERRO [{sc}]: {e}")
             errors += 1
@@ -568,6 +583,8 @@ def main() -> int:
     b.add_argument("--manual", required=True, help="CSV de fontes da condição manual (url,title,engine,selected).")
     b.add_argument("--out", default=str(DEFAULT_OUT_DIR))
     b.add_argument("--seed", type=int, default=42, help="Semente da ordem aleatória das folhas (default: 42).")
+    b.add_argument("--model", default=None, help="Só execuções deste modelo (etiqueta exata). Recomendado.")
+    b.add_argument("--since", default="00000000", help="Só execuções com data de ficheiro >= AAAAMMDD.")
     b.add_argument("--prelabel-regex", default=None,
                    help="Expressão (sobre o URL) das fontes a marcar como não relevantes sem revisão humana.")
     b.set_defaults(func=cmd_build)
@@ -576,6 +593,8 @@ def main() -> int:
     a.add_argument("--ground-truth", default=str(DEFAULT_OUT_DIR), help="Diretório das folhas de revisão.")
     a.add_argument("--investigations", required=True, help="Glob das investigações do DarkSherlock (ex.: investigations/eval_*.json).")
     a.add_argument("--manual-dir", required=True, help="Diretório com manual_sources_<ID>.csv.")
+    a.add_argument("--model", default=None, help="Só execuções deste modelo (etiqueta exata). Recomendado.")
+    a.add_argument("--since", default="00000000", help="Só execuções com data de ficheiro >= AAAAMMDD.")
     a.add_argument("--scenarios", default=None, help="IDs separados por vírgula (default: todos com folhas).")
     a.add_argument("--out", default=None)
     a.add_argument("--allow-unresolved", action="store_true", help="Exclui discordâncias sem rótulo final em vez de falhar.")
