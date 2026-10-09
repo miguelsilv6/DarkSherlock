@@ -59,6 +59,17 @@ _RE_NON_ALPHANUM = re.compile(r"[^0-9a-zA-Z\-\.]")
 # do máximo do slider da UI (100), pelo que não afecta o fluxo normal.
 FILTER_INPUT_CAP = 120
 
+# Como terminou a última chamada a filter_results (Etapa 4). Serve a avaliação
+# (EQ-03): distingue um ranking do LLM dos caminhos de contingência, em que a
+# lista devolvida NÃO é um ranking do modelo. Valores:
+#   "ranked"            ranking do LLM interpretado com sucesso
+#   "none"              LLM respondeu NONE e não há matches por keyword -> []
+#   "none_keyword"      LLM respondeu NONE; usada a contingência por keyword
+#   "parse_fallback"    resposta ilegível -> 20 primeiros sem ranking
+#   "error_fallback"    chamada ao LLM falhou duas vezes -> 20 primeiros sem ranking
+#   "empty_input"       sem resultados à entrada
+last_filter_outcome = None
+
 import warnings
 
 # Suprime avisos de deprecação e avisos internos de bibliotecas de terceiros
@@ -238,6 +249,8 @@ def filter_results(llm, query, results):
         list[dict]: Subconjunto dos resultados originais, ordenado por
                     relevância, com no máximo 20 entradas.
     """
+    global last_filter_outcome
+    last_filter_outcome = "empty_input"
     if not results:
         return []
 
@@ -298,6 +311,7 @@ def filter_results(llm, query, results):
                 "Filter retry também falhou (%s) — fallback para top-%d sem ranking.",
                 e2, min(len(results), 20),
             )
+            last_filter_outcome = "error_fallback"
             return results[:20]
 
     # Se o LLM indicou que nenhum resultado é relevante, não confiar cegamente:
@@ -320,8 +334,10 @@ def filter_results(llm, query, results):
                 "com a query ('%s') — a ignorar o NONE e a usar fallback por keyword.",
                 len(keyword_matches), len(results), query[:60],
             )
+            last_filter_outcome = "none_keyword"
             return keyword_matches[:20]
         logger.info("LLM filter returned NONE — no relevant results found.")
+        last_filter_outcome = "none"
         return []
 
     # Select top_k results using original (non-truncated) results
@@ -348,6 +364,9 @@ def filter_results(llm, query, results):
             min(len(results), 20),
         )
         parsed_indices = list(range(1, min(len(results), 20) + 1))
+        last_filter_outcome = "parse_fallback"
+    else:
+        last_filter_outcome = "ranked"
 
     top_results = [results[i - 1] for i in parsed_indices[:20]]
 
