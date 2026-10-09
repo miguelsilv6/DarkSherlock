@@ -45,6 +45,12 @@ Decisões de operacionalização (documentar na metodologia):
     (ou, com --allow-unresolved, exclui-as e avisa).
   - Controlo de EQ-03: os 20 primeiros de "search_results" (a ordem em que o
     pipeline os devolveu, sem ranking pelo LLM).
+  - Pré-rotulagem (--prelabel-regex): fontes cujo URL case com a expressão são
+    marcadas "não relevantes" sem passar pelos revisores (p. ex. ligações de
+    navegação de um motor que não são resultados de pesquisa). Ficam em
+    prelabel_<ID>.csv, contam como não relevantes no Top-K e nos 20 primeiros,
+    contam no pool, e ficam fora do κ (não foram julgadas por pessoas). A regra
+    tem de ser fixada e justificada antes da revisão.
 
 Uso:
     python evaluation/eq02_eq03.py build --scenario A1 \\
@@ -64,6 +70,7 @@ import glob
 import json
 import math
 import random
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -265,6 +272,15 @@ def cmd_build(args) -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
+    prelabel_re = re.compile(args.prelabel_regex, re.IGNORECASE) if args.prelabel_regex else None
+    prelabeled = sorted(u for u in pool if prelabel_re and (prelabel_re.search(u) or prelabel_re.search(pool[u]["url"])))
+    if prelabel_re:
+        with open(out / f"prelabel_{scenario}.csv", "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["url", "title", "label", "regex"])
+            for u in prelabeled:
+                w.writerow([pool[u]["url"], pool[u]["title"], "not_relevant", args.prelabel_regex])
+
     with open(out / f"pool_{scenario}.csv", "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["url", "title", "in_darksherlock", "ds_runs", "ds_top20_runs", "found_by",
@@ -275,7 +291,7 @@ def cmd_build(args) -> int:
                         "|".join(map(str, sorted(e["ds_top20_runs"]))), "|".join(sorted(e["found_by"])),
                         int(e["in_manual"]), e["manual_engine"], int(e["manual_top20"])])
 
-    order = sorted(pool)
+    order = sorted(u for u in pool if u not in set(prelabeled))
     random.Random(args.seed).shuffle(order)
     for reviewer in ("A", "B"):
         with open(out / f"review_{scenario}_{reviewer}.csv", "w", newline="", encoding="utf-8-sig") as f:
@@ -289,6 +305,8 @@ def cmd_build(args) -> int:
     both = sum(1 for e in pool.values() if e["in_manual"] and e["ds_runs"])
     print(f"[{scenario}] pool: {len(pool)} fontes ({len(runs)} execução(ões) DarkSherlock + manual). "
           f"Só DarkSherlock: {only_ds} · só manual: {only_manual} · ambos: {both}.")
+    if prelabel_re:
+        print(f"Pré-rotuladas como não relevantes (regex): {len(prelabeled)}; a rever por pessoas: {len(order)}.")
     print(f"Folhas de revisão (ordem aleatória, sem indicar a origem): {out}/review_{scenario}_A.csv e _B.csv")
     print("Rótulos: relevant (r) / not_relevant (n) / inaccessible (i). Cada revisor preenche a sua folha sem ver a do outro.")
     return 0
@@ -307,7 +325,7 @@ def _read_labels(path: Path, scenario: str, who: str) -> dict[str, str | None]:
     return labels
 
 
-def resolve_labels(scenario: str, gt_dir: Path, allow_unresolved: bool) -> tuple[dict[str, str], list, list]:
+def resolve_labels(scenario: str, gt_dir: Path, allow_unresolved: bool) -> tuple[dict[str, str], list, list, int]:
     """Rótulo final por URL. Devolve (final, pares (a, b) para o κ, discordâncias não resolvidas)."""
     pa, pb = gt_dir / f"review_{scenario}_A.csv", gt_dir / f"review_{scenario}_B.csv"
     if not (pa.is_file() and pb.is_file()):
@@ -322,6 +340,18 @@ def resolve_labels(scenario: str, gt_dir: Path, allow_unresolved: bool) -> tuple
     final_path = gt_dir / f"review_{scenario}_final.csv"
     resolved = _read_labels(final_path, scenario, "final") if final_path.is_file() else {}
     final, unresolved, pairs = {}, [], []
+    pre_path = gt_dir / f"prelabel_{scenario}.csv"
+    prelabeled = {}
+    if pre_path.is_file():
+        with open(pre_path, newline="", encoding="utf-8-sig") as f:
+            for r in csv.DictReader(f):
+                if (r.get("url") or "").strip():
+                    prelabeled[normalize_url(r["url"])] = "not_relevant"
+        clash = set(prelabeled) & set(a)
+        if clash:
+            raise ValueError(f"{scenario}: {len(clash)} URL(s) pré-rotulada(s) também constam das folhas de revisão "
+                             f"(ex.: {sorted(clash)[0]}). Reconstrói as folhas com 'build'.")
+        final.update(prelabeled)
     for u in a:
         pairs.append((a[u], b[u]))
         if a[u] == b[u]:
@@ -336,12 +366,12 @@ def resolve_labels(scenario: str, gt_dir: Path, allow_unresolved: bool) -> tuple
             f"{scenario}: {len(unresolved)} discordância(s) sem rótulo final. Resolve-as em {final_path.name} "
             f"(colunas url,label) ou usa --allow-unresolved para as excluir.\n{lines}"
         )
-    return final, pairs, unresolved
+    return final, pairs, unresolved, len(prelabeled)
 
 
 def analyze_scenario(scenario: str, gt_dir: Path, investigations: str, manual_dir: Path, allow_unresolved: bool,
                      allow_unlabeled: bool) -> dict:
-    final, pairs, unresolved = resolve_labels(scenario, gt_dir, allow_unresolved)
+    final, pairs, unresolved, n_prelabeled = resolve_labels(scenario, gt_dir, allow_unresolved)
     relevant = {u for u, l in final.items() if l == "relevant"}
     inaccessible = {u for u, l in final.items() if l == "inaccessible"}
     runs = load_darksherlock_runs(investigations, scenario)
@@ -391,6 +421,7 @@ def analyze_scenario(scenario: str, gt_dir: Path, investigations: str, manual_di
     return {
         "scenario": scenario, "domain": _scenario_domain(scenario), "n_pool": len(final) + len(unresolved),
         "n_relevant": len(relevant), "n_inaccessible": len(inaccessible), "n_unresolved": len(unresolved),
+        "n_prelabeled": n_prelabeled,
         "n_unlabeled": len(unlabeled), "kappa_3": cohen_kappa(labels_a, labels_b),
         "kappa_bin": cohen_kappa([("relevant" if x == "relevant" else "other") for x in labels_a],
                                  [("relevant" if x == "relevant" else "other") for x in labels_b]),
@@ -405,16 +436,16 @@ def render_summary(results: list[dict]) -> str:
     lines = ["# EQ-02 e EQ-03 — cobertura e qualidade da filtragem\n"]
 
     lines.append("## Concordância entre revisores (κ de Cohen)\n")
-    lines.append("| Cenário | Fontes no pool | Relevantes | Inacessíveis | κ (3 classes) | κ (relevante vs. resto) | Aceitável (≥ 0,6) |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("| Cenário | Fontes no pool | Pré-rotuladas | Relevantes | Inacessíveis | κ (3 classes) | κ (relevante vs. resto) | Aceitável (≥ 0,6) |")
+    lines.append("|---|---|---|---|---|---|---|---|")
     all_pairs = []
     for r in results:
         all_pairs.extend(r["pairs"])
         ok = "sim" if (not math.isnan(r["kappa_3"]) and r["kappa_3"] >= KAPPA_THRESHOLD) else "não"
-        lines.append(f"| {r['scenario']} | {r['n_pool']} | {r['n_relevant']} | {r['n_inaccessible']} | "
+        lines.append(f"| {r['scenario']} | {r['n_pool']} | {r['n_prelabeled']} | {r['n_relevant']} | {r['n_inaccessible']} | "
                      f"{_fmt(r['kappa_3'])} | {_fmt(r['kappa_bin'])} | {ok} |")
     k_all = cohen_kappa([p[0] for p in all_pairs], [p[1] for p in all_pairs])
-    lines.append(f"| **Global** | {sum(r['n_pool'] for r in results)} | {sum(r['n_relevant'] for r in results)} | "
+    lines.append(f"| **Global** | {sum(r['n_pool'] for r in results)} | {sum(r['n_prelabeled'] for r in results)} | {sum(r['n_relevant'] for r in results)} | "
                  f"{sum(r['n_inaccessible'] for r in results)} | **{_fmt(k_all)}** | "
                  f"{_fmt(cohen_kappa([('relevant' if p[0] == 'relevant' else 'other') for p in all_pairs], [('relevant' if p[1] == 'relevant' else 'other') for p in all_pairs]))} | "
                  f"{'sim' if (not math.isnan(k_all) and k_all >= KAPPA_THRESHOLD) else 'não'} |")
@@ -537,6 +568,8 @@ def main() -> int:
     b.add_argument("--manual", required=True, help="CSV de fontes da condição manual (url,title,engine,selected).")
     b.add_argument("--out", default=str(DEFAULT_OUT_DIR))
     b.add_argument("--seed", type=int, default=42, help="Semente da ordem aleatória das folhas (default: 42).")
+    b.add_argument("--prelabel-regex", default=None,
+                   help="Expressão (sobre o URL) das fontes a marcar como não relevantes sem revisão humana.")
     b.set_defaults(func=cmd_build)
 
     a = sub.add_parser("analyze", help="Calcula κ, recall, P@20, R@20 e F1@20 a partir das folhas preenchidas.")
