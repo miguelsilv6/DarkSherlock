@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from langchain_core.callbacks.base import BaseCallbackHandler  # noqa: E402
 
+import llm as llm_module  # noqa: E402
 from llm import filter_results, get_llm  # noqa: E402
 
 
@@ -86,7 +87,8 @@ def main() -> int:
 
     first20 = [r["link"] for r in results[:20]]
     got = [r["link"] for r in top]
-    print("\nIgual aos 20 primeiros (sem ranking)?", got == first20[:len(got)])
+    print("\nDesfecho da Etapa 4 (llm.last_filter_outcome):", llm_module.last_filter_outcome)
+    print("Igual aos 20 primeiros (sem ranking)?", got == first20[:len(got)])
     return 0
 
 

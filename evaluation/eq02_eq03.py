@@ -197,6 +197,7 @@ def load_darksherlock_runs(pattern: str, scenario: str) -> list[dict]:
         runs.append({
             "file": Path(path).name, "retrieved": retrieved, "top20": top20,
             "first20": retrieved[:TOP_K], "found_by": found_by, "titles": titles,
+            "stage4_outcome": data.get("stage4_outcome", "desconhecido"),
         })
     if skipped:
         print(f"AVISO [{scenario}]: {skipped} investigação(ões) sem 'search_results' (anteriores ao campo) ignorada(s).")
@@ -369,6 +370,7 @@ def analyze_scenario(scenario: str, gt_dir: Path, investigations: str, manual_di
             "n_retrieved": len(run["retrieved"]), "relevant_retrieved": retrieved_hits, "n_relevant": len(relevant),
             "recall": recall, "p20_llm": p_llm, "r20_llm": r_llm, "f1_llm": f_llm,
             "p20_first20": p_f20, "r20_first20": r_f20, "f1_first20": f_f20,
+            "stage4_outcome": run["stage4_outcome"],
         })
 
     manual_row = None
@@ -463,6 +465,18 @@ def render_summary(results: list[dict]) -> str:
             f"{_fmt(_mean([m['f1'] for m in mans])) if mans else '—'} |"
         )
 
+    outcomes: dict[str, int] = {}
+    for r in results:
+        for x in r["per_run"]:
+            outcomes[x["stage4_outcome"]] = outcomes.get(x["stage4_outcome"], 0) + 1
+    lines.append("\n## Desfecho da Etapa 4 nas execuções analisadas\n")
+    lines.append("Só `ranked` é um ranking do LLM; os restantes são caminhos de contingência, em que o Top-20 "
+                 "não reflete o modelo. `desconhecido` = investigação anterior à gravação deste campo.\n")
+    lines.append("| Desfecho | Execuções |")
+    lines.append("|---|---|")
+    for k, v in sorted(outcomes.items(), key=lambda kv: -kv[1]):
+        lines.append(f"| {k} | {v} |")
+
     notes = []
     if any(r["n_unresolved"] for r in results):
         notes.append("há discordâncias não resolvidas, excluídas (--allow-unresolved)")
@@ -500,7 +514,7 @@ def cmd_analyze(args) -> int:
     out = Path(args.out) if args.out else gt_dir
     out.mkdir(parents=True, exist_ok=True)
     fields = ["scenario_id", "domain", "run", "file", "n_retrieved", "relevant_retrieved", "n_relevant", "recall",
-              "p20_llm", "r20_llm", "f1_llm", "p20_first20", "r20_first20", "f1_first20"]
+              "p20_llm", "r20_llm", "f1_llm", "p20_first20", "r20_first20", "f1_first20", "stage4_outcome"]
     with open(out / "eq02_eq03_per_run.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()

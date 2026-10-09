@@ -51,6 +51,7 @@ from llm import (
     get_llm, refine_query, filter_results, generate_summary,
     filter_scraped_by_relevance,
 )
+import llm as llm_module
 from llm_utils import get_model_choices
 from search import get_search_results
 from scrape import scrape_multiple
@@ -188,6 +189,7 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
     # Etapa 4 — Filtragem por relevância (LLM)
     t0 = time.time()
     filtered = filter_results(llm, refined, results)
+    stage4_outcome = llm_module.last_filter_outcome
     if len(filtered) > MAX_SCRAPE:
         filtered = filtered[:MAX_SCRAPE]
     timings_ms["filter_results"] = round((time.time() - t0) * 1000)
@@ -227,6 +229,9 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         # Lista completa de fontes recuperadas (antes do filtro por LLM), cada
         # uma com "found_by": base do recall e dos motores produtivos de EQ-02.
         "search_results": results,
+        # Como terminou a Etapa 4 ("ranked", "none_keyword", "parse_fallback", ...):
+        # só "ranked" é um ranking do LLM (EQ-03).
+        "stage4_outcome": stage4_outcome,
         "summary": summary,
         "integrity": integrity,
         # Conteúdo bruto por fonte, tal como foi passado a compute_integrity_hashes()
@@ -269,6 +274,7 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         "domain": scenario["domain"],
         "audit_id": audit_id,
         "investigation_file": inv_fname,
+        "stage4_outcome": stage4_outcome,
         "results_found": len(results),
         "results_filtered": len(filtered),
         "results_pre_relevance": pre_relevance,
