@@ -17,7 +17,9 @@ from urllib.parse import urljoin
 from langchain_ollama import ChatOllama
 from typing import Callable, Optional, List
 from langchain_core.callbacks.base import BaseCallbackHandler
-from config import OLLAMA_BASE_URL
+from config import (
+    OLLAMA_BASE_URL, OLLAMA_NUM_CTX, OLLAMA_NUM_PREDICT, OLLAMA_REPEAT_PENALTY, OLLAMA_SEED,
+)
 import local_models
 
 logger = logging.getLogger(__name__)
@@ -132,9 +134,14 @@ def resolve_model_config(model_choice: str):
     model_choice_lower = _normalize_model_name(model_choice or "")
     for ollama_model in fetch_ollama_models():
         if _normalize_model_name(ollama_model) == model_choice_lower:
-            return {
-                "class": ChatOllama,
-                "constructor_params": {"model": ollama_model, "base_url": OLLAMA_BASE_URL},
-            }
+            params = {"model": ollama_model, "base_url": OLLAMA_BASE_URL}
+            # Só se passam os parâmetros definidos no ambiente (ver config.py).
+            for key, value in (
+                ("num_ctx", OLLAMA_NUM_CTX), ("num_predict", OLLAMA_NUM_PREDICT),
+                ("repeat_penalty", OLLAMA_REPEAT_PENALTY), ("seed", OLLAMA_SEED),
+            ):
+                if value is not None:
+                    params[key] = value
+            return {"class": ChatOllama, "constructor_params": params}
 
     return None
