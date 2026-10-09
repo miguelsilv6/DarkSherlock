@@ -46,6 +46,9 @@ def main() -> int:
     ap.add_argument("--model", required=True)
     ap.add_argument("--file", required=True, help="Investigação eval_*.json com 'search_results'.")
     ap.add_argument("--query", default=None, help="Query da Etapa 4 (por omissão, 'refined_query' do ficheiro).")
+    ap.add_argument("--show-reasoning", action="store_true",
+                    help="Modelos de raciocínio (Ollama): pede o raciocínio ao servidor e mostra-o em "
+                         "additional_kwargs['reasoning_content']. Só para diagnóstico; não altera o pipeline.")
     args = ap.parse_args()
 
     data = json.loads(Path(args.file).read_text(encoding="utf-8"))
@@ -56,6 +59,11 @@ def main() -> int:
     query = args.query or data.get("refined_query") or data["query"]
 
     llm = get_llm(args.model)
+    if args.show_reasoning:
+        if not hasattr(llm, "reasoning"):
+            print("AVISO: este modelo não suporta 'reasoning' (só ChatOllama).")
+        else:
+            llm.reasoning = True
     handler = _RawOutput()
     llm.callbacks = [handler]
 
@@ -69,7 +77,11 @@ def main() -> int:
         print(f"\n--- chamada {i} ---")
         print("texto cru:", repr(c["text"][:1500]))
         print("generation_info:", {k: v for k, v in c["generation_info"].items() if k != "context"})
-        print("additional_kwargs:", c["additional_kwargs"])
+        kw = dict(c["additional_kwargs"])
+        reasoning = kw.pop("reasoning_content", None)
+        print("additional_kwargs:", kw)
+        if reasoning:
+            print("raciocínio (primeiros 3000 chars):", reasoning[:3000])
         print("usage:", c["usage"])
 
     first20 = [r["link"] for r in results[:20]]
