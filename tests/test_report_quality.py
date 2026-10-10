@@ -1,6 +1,8 @@
 """Relatório sem sentido com o modelo 0,5B: definições persistentes, modelo por omissão,
 Etapa 5 com 2 termos-chave e controlo de qualidade do relatório."""
 
+import pytest
+
 import llm
 import local_models
 import pipeline
@@ -125,3 +127,29 @@ def test_generate_summary_marks_bad_report(fake_llm):
     out = llm.generate_summary(fake_llm(_degenerate()), "Akira Portugal", content)
     assert out.startswith("> ⛔ **Relatório inválido")
     assert out.count("Livros de Portugal em Inglês") == 1
+
+
+# --- modelo embutido sem pedidos de rede quando já está em cache ---------------
+def test_cached_model_loads_without_network(monkeypatch, tmp_path):
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"GGUF")
+    monkeypatch.setattr(local_models, "is_available", lambda: True)
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda **k: str(gguf))
+
+    def no_network(**k):
+        raise AssertionError("hf_hub_download não pode ser chamado com o modelo em cache")
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", no_network)
+    assert local_models.ensure_downloaded(local_models.LIGHTEST_MODEL) == str(gguf)
+
+
+def test_missing_model_is_downloaded_once(monkeypatch, tmp_path):
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    calls = []
+    monkeypatch.setattr(local_models, "is_available", lambda: True)
+    monkeypatch.setattr(local_models, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda **k: None)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda **k: calls.append(k) or "/x.gguf")
+    spec = local_models.BUILTIN_MODELS[local_models.LIGHTEST_MODEL]
+    assert local_models.ensure_downloaded(local_models.LIGHTEST_MODEL) == "/x.gguf"
+    assert calls == [{"repo_id": spec["repo_id"], "filename": spec["filename"], "cache_dir": str(tmp_path)}]
