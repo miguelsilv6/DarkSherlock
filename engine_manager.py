@@ -2,7 +2,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 from search import SEARCH_ENGINES as _BUILTIN_ENGINES
 
@@ -40,6 +40,52 @@ def _migrate_dead_engines(engines: List[Dict]) -> bool:
 
     CONFIG_DIR.mkdir(exist_ok=True)
     _DEAD_ENGINES_MARKER.write_text("1", encoding="utf-8")
+    return changed
+
+
+# Caminhos antigos de motores que mudaram de URL (davam 404; ver search.py). Numa
+# configuração existente, a entrada antiga passa para o URL novo — ou é removida,
+# se o URL novo já lá estiver (era o caso: as duas coexistiam com o mesmo nome).
+_RETIRED_URLS = {
+    "http://wbr4bzzxbeidc6dwcqgwr3b6jl7ewtykooddsc5ztev3t3otnl45khyd.onion/evo/search.php?q={query}":
+        "http://wbr4bzzxbeidc6dwcqgwr3b6jl7ewtykooddsc5ztev3t3otnl45khyd.onion/?q={query}",
+    "http://search7tdrcvri22rieiwgi5g46qnwsesvnubqav2xakhezv4hjzkkad.onion/search?q={query}":
+        "http://search7tdrcvri22rieiwgi5g46qnwsesvnubqav2xakhezv4hjzkkad.onion/?q={query}",
+}
+
+
+def _migrate_retired_urls(engines: List[Dict]) -> bool:
+    urls = {e.get("url") for e in engines}
+    changed, kept = False, []
+    for e in engines:
+        new = _RETIRED_URLS.get(e.get("url"))
+        if new is None:
+            kept.append(e)
+        elif new in urls:
+            changed = True  # duplicado do motor já no URL novo
+        else:
+            e["url"] = new
+            urls.add(new)
+            kept.append(e)
+            changed = True
+    engines[:] = kept
+    return changed
+
+
+def _unique_names(engines: List[Dict]) -> bool:
+    """Garante nomes únicos: o estado por motor (EQ-06) e o "found_by" (EQ-02) são
+    indexados pelo nome, e dois motores com o mesmo nome apagavam o resultado um
+    do outro. Os repetidos ganham um sufixo " (2)", " (3)", ..."""
+    seen, changed = set(), False
+    for e in engines:
+        base, name, n = e["name"], e["name"], 1
+        while name.lower() in seen:
+            n += 1
+            name = f"{base} ({n})"
+        if name != e["name"]:
+            e["name"] = name
+            changed = True
+        seen.add(name.lower())
     return changed
 
 
@@ -116,8 +162,10 @@ def load_engines() -> List[Dict]:
             new_engines_added = True
 
     dead_engines_migrated = _migrate_dead_engines(engines)
+    retired_migrated = _migrate_retired_urls(engines)
+    renamed = _unique_names(engines)
 
-    if new_engines_added or dead_engines_migrated:
+    if new_engines_added or dead_engines_migrated or retired_migrated or renamed:
         save_engines(engines)
 
     return engines
@@ -177,16 +225,6 @@ def get_active_engines() -> List[Dict]:
     return active
 
 
-def get_active_engine_urls() -> List[str]:
-    """Return flat list of URLs for active SIMPLE engines.
-
-    Mantida para compatibilidade retroactiva (audit.py / chamadores antigos).
-    Exclui engines de fórum, cujos URLs são apenas informativos — o pipeline
-    deve usar get_active_engines() para fazer dispatch por tipo.
-    """
-    return [e["url"] for e in get_active_engines() if e.get("type", "simple") == "simple"]
-
-
 def add_engine(name: str, url: str) -> str:
     """Add a new engine via UI.
 
@@ -208,6 +246,8 @@ def add_engine(name: str, url: str) -> str:
     engines = load_engines()
     if any(e["url"] == url for e in engines):
         return "Ja existe um engine com este URL."
+    if any(e["name"].lower() == name.lower() for e in engines):
+        return "Ja existe um engine com este nome."
 
     engines.append({
         "name": name,
@@ -236,6 +276,9 @@ def update_engine(index: int, name: str, url: str, enabled: bool) -> str:
 
     if not name:
         return "Nome do engine nao pode estar vazio."
+
+    if any(i != index and e["name"].lower() == name.lower() for i, e in enumerate(engines)):
+        return "Ja existe um engine com este nome."
 
     engine_type = engines[index].get("type", "simple")
     if engine_type == "simple" and "{query}" not in url:

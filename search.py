@@ -21,15 +21,12 @@ Contexto académico:
 """
 
 import requests
-import random, re
-import json
-import os
+import random
 from urllib.parse import quote_plus, urlsplit, parse_qs
 import threading
 import logging
 
 import search_filters as sf
-from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -86,6 +83,21 @@ SEARCH_ENGINES = [
     {"name": "The Deep Searches","url": "http://searchgf7gdtauh7bhnbyed4ivxqmuoat3nm6zfrg3ymkq6mtnpye3ad.onion/search?q={query}"},
 
     # ---------------------------------------------------------------------------
+    # Motores deepdarkCTI activados após teste de conectividade via Tor (abril
+    # de 2026: HTTP 200 com timeout de 20 s). Evo Search e Deep Search davam 404
+    # nos caminhos originais (/evo/search.php, /search) e passaram para a raiz
+    # (/?q=). Nota: o teste só verificou que respondem; se ignorarem a query, a
+    # pesquisa marca-os como "not_results_page" em search.last_search_stats.
+    # ---------------------------------------------------------------------------
+    {"name": "Tordex",         "url": "http://tordexu73joywapk2txdr54jed4imqledpcvcuf75qsas2gwdgksvnyd.onion/?q={query}"},
+    {"name": "Kraken",         "url": "http://krakenai2gmgwwqyo7bcklv2lzcvhe7cxzzva2xpygyax5f33oqnxpad.onion/?q={query}"},
+    {"name": "GDark",          "url": "http://zb2jtkhnbvhkya3d46twv3g7lkobi4s62tjffqmafjibixk6pmq75did.onion/?q={query}"},
+    {"name": "Tornet Global",  "url": "http://xcprh4cjas33jnxgs3zhakof6mctilfxigwjcsevdfap7vtyj57lmjad.onion/tgs/?q={query}"},
+    {"name": "DarkwebDaily",   "url": "http://dailydwusclfsu7fzwydc5emidexnesmdlzqmz2dxnx5x4thl42vj4qd.onion/?q={query}"},
+    {"name": "Evo Search",     "url": "http://wbr4bzzxbeidc6dwcqgwr3b6jl7ewtykooddsc5ztev3t3otnl45khyd.onion/?q={query}"},
+    {"name": "Deep Search",    "url": "http://search7tdrcvri22rieiwgi5g46qnwsesvnubqav2xakhezv4hjzkkad.onion/?q={query}"},
+
+    # ---------------------------------------------------------------------------
     # Motores confirmados como mortos (EQ-06 — evaluation/analyze_engine_failures.py)
     #
     # 100% de falhas em todas as execuções instrumentadas (n=6 cada, ver
@@ -108,20 +120,13 @@ SEARCH_ENGINES = [
     # ---------------------------------------------------------------------------
     {"name": "Haystak",         "url": "http://haystak5njsmn2hqkewecpaxetahtwhsbsa64jom2k22z5afxhnpxfid.onion/?q={query}",                        "default_enabled": False},
     {"name": "Torch",           "url": "http://torchqsxkllrj2eqaitp5xvcgfeg3g5dr3hr2wnuvnj76bbxkxfiwxqd.onion/search?q={query}",                   "default_enabled": False},
-    {"name": "Tordex",          "url": "http://tordexu73joywapk2txdr54jed4imqledpcvcuf75qsas2gwdgksvnyd.onion/?q={query}",                         "default_enabled": False},
     {"name": "DarkSearch",      "url": "http://darkschn4iw2hxvpv2vy2uoxwkvs2padb56t3h4wqztre6upoc5qwgid.onion/search?q={query}",                   "default_enabled": False},
     {"name": "Bobby",           "url": "http://bobby64o755x3gsuznts6hf6agxqjcz5bop6hs7ejorekbm7omes34ad.onion/?q={query}",                         "default_enabled": False},
-    {"name": "Evo Search",      "url": "http://wbr4bzzxbeidc6dwcqgwr3b6jl7ewtykooddsc5ztev3t3otnl45khyd.onion/evo/search.php?q={query}",           "default_enabled": False},
     {"name": "VisiTOR",         "url": "http://uzowkytjk4da724giztttfly4rugfnbqkexecotfp5wjc2uhpykrpryd.onion/search/?q={query}",                  "default_enabled": False},
     {"name": "SearX",           "url": "http://z5vawdol25vrmorm4yydmohsd4u6rdoj2sylvoi3e3nqvxkvpqul7bqd.onion/search?q={query}",                   "default_enabled": False},
     {"name": "Demon",           "url": "http://srcdemonm74icqjvejew6fprssuolyoc2usjdwflevbdpqoetw4x3ead.onion/search?q={query}",                   "default_enabled": False},
-    {"name": "Deep Search",     "url": "http://search7tdrcvri22rieiwgi5g46qnwsesvnubqav2xakhezv4hjzkkad.onion/search?q={query}",                   "default_enabled": False},
     {"name": "OnionSearch",     "url": "http://searchpxsd4vdpf35uk4ycgxolp732zhs7zr4qgftt6qvmgpo6mukbyd.onion/?q={query}",                        "default_enabled": False},
-    {"name": "Kraken",          "url": "http://krakenai2gmgwwqyo7bcklv2lzcvhe7cxzzva2xpygyax5f33oqnxpad.onion/?q={query}",                        "default_enabled": False},
     {"name": "Hoodle",          "url": "http://nr2dvqdot7yw6b5poyjb7tzot7fjrrweb2fhugvytbbio7ijkrvicuid.onion/?q={query}",                        "default_enabled": False},
-    {"name": "GDark",           "url": "http://zb2jtkhnbvhkya3d46twv3g7lkobi4s62tjffqmafjibixk6pmq75did.onion/?q={query}",                        "default_enabled": False},
-    {"name": "Tornet Global",   "url": "http://xcprh4cjas33jnxgs3zhakof6mctilfxigwjcsevdfap7vtyj57lmjad.onion/tgs/?q={query}",                    "default_enabled": False},
-    {"name": "DarkwebDaily",    "url": "http://dailydwusclfsu7fzwydc5emidexnesmdlzqmz2dxnx5x4thl42vj4qd.onion/?q={query}",                        "default_enabled": False},
     {"name": "Stealth",         "url": "http://stealth5wfeiuvmtgd2s3m2nx2bb3ywdo2yiklof77xf6emkwjqo53yd.onion/?q={query}",                        "default_enabled": False},
     {"name": "Snow Search",     "url": "http://snowsrchzbc2xdkmgvimetleohpnnnscnsgwmvneizcb34ywwocahiyd.onion/?q={query}",                        "default_enabled": False},
 
@@ -143,11 +148,6 @@ SEARCH_ENGINES = [
     },
 ]
 
-# Lista plana de URLs extraída de SEARCH_ENGINES, mantida para
-# compatibilidade retroactiva com código existente que possa referenciar
-# DEFAULT_SEARCH_ENGINES directamente (e.g., versões anteriores do projecto).
-# A lógica de pesquisa actual lê os motores activos via engine_manager.py.
-DEFAULT_SEARCH_ENGINES = [e["url"] for e in SEARCH_ENGINES]
 
 
 def get_tor_session():

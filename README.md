@@ -236,6 +236,8 @@ services:
       - /opt/darksherlock/investigations:/app/investigations       # Investigações persistentes
       - /opt/darksherlock/logs:/app/logs                          # Logs persistentes
       - /opt/darksherlock/config:/app/config                      # Motores de pesquisa
+      - /opt/darksherlock/referrals:/app/referrals                # Registo para denúncia (salvaguarda ética)
+      - /opt/darksherlock/models:/app/models                      # Modelos GGUF embutidos (cache)
     extra_hosts:
       - "host.docker.internal:host-gateway"    # Acesso ao Ollama no host
     healthcheck:

@@ -55,7 +55,9 @@ OLLAMA_SEED = _env_number("OLLAMA_SEED", int)
 
 # Pasta onde os ficheiros GGUF dos modelos embutidos são guardados em cache.
 # Pode ser sobreposta por ambiente (e.g., para montar um volume no Docker).
-MODELS_DIR = Path(os.getenv("DARKSHERLOCK_MODELS_DIR", "models"))
+# `or`: uma linha "DARKSHERLOCK_MODELS_DIR=" vazia no .env dava Path("") — a pasta
+# atual — e os GGUF (centenas de MB) iam parar à raiz do projeto.
+MODELS_DIR = Path(os.getenv("DARKSHERLOCK_MODELS_DIR", "").strip() or "models")
 
 # Chave (do registry em local_models.py) do modelo embutido por omissão.
 # Vazio → usa o default definido em local_models.DEFAULT_BUILTIN_MODEL.

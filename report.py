@@ -18,7 +18,6 @@ Autores: tese de mestrado em Cibersegurança
 """
 
 import hashlib
-import textwrap
 from datetime import datetime, timezone
 from fpdf import FPDF
 
