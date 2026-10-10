@@ -135,17 +135,20 @@ class DarkForumsAdapter(ForumAdapter):
             return ok
 
     def search(self, query: str) -> list[dict]:
+        # Falhas (sessão não autenticada, pedido falhado, erro de parsing) são
+        # lançadas: get_search_results regista o motor como "failed" (EQ-06).
+        # Antes devolvia [] e o fórum contava sempre como "ok".
         if not self.ensure_session():
-            return []
+            raise RuntimeError("DarkForums: sessão não autenticada")
         try:
             html = self._post_search(query)
             if html is None:
-                return []
+                raise RuntimeError("DarkForums: pesquisa sem resposta")
             return self._parse_search_results(html)[: self._SEARCH_RESULTS_LIMIT]
         except Exception as e:  # noqa: BLE001
             logger.debug("DarkForums search falhou para '%s': %s", query, e)
             _log_audit("darkforums_search_error", error=str(e))
-            return []
+            raise
 
     def fetch_thread(self, url: str) -> str:
         if not self.ensure_session():

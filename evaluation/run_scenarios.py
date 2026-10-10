@@ -55,6 +55,7 @@ from llm import (
 import llm as llm_module
 from config import PIPELINE_VERSION
 import scrape as scrape_module
+import search as search_module
 from llm_utils import get_model_choices
 from search import get_search_results
 from scrape import scrape_multiple
@@ -182,6 +183,7 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
     t0 = time.time()
     active_engines = [e["name"] for e in get_active_engines()]
     results, engine_status = get_search_results(refined, max_workers=THREADS)
+    search_stats = dict(search_module.last_search_stats)
     if len(results) > MAX_RESULTS:
         results = results[:MAX_RESULTS]
     retrieved_at = datetime.now(timezone.utc).isoformat()
@@ -252,6 +254,9 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         # Estado por motor de pesquisa ("ok"/"failed") desta execução — EQ-06
         # (Capítulo 6, secção 6.4.6, "Tolerância a motores caídos").
         "engine_status": engine_status,
+        # Por motor: desfecho (ok_results, nav_only, not_results_page, ...) e quantos
+        # resultados foram descartados como navegação, páginas de motores ou spam.
+        "search_stats": search_stats,
         "scenario_id": scenario["id"],   # extra: rastreável ao cenário do Cap. 6
         "domain": scenario["domain"],
     }

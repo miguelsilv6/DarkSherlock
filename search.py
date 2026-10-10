@@ -24,7 +24,11 @@ import requests
 import random, re
 import json
 import os
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit, parse_qs
+import threading
+import logging
+
+import search_filters as sf
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
@@ -212,9 +216,11 @@ def fetch_search_results(endpoint, query, session=None):
       1. Substituição do placeholder: o template de URL recebe a query real
          via str.format(query=query), produzindo o URL final de pesquisa.
       2. Pedido HTTP via sessão Tor com User-Agent aleatório.
-      3. Parsing HTML com BeautifulSoup para identificar todas as âncoras <a>.
-      4. Extracção de URLs .onion via expressão regular.
-      5. Filtragem básica para eliminar auto-referências ao motor de pesquisa.
+      3. Verificação de que é uma página de resultados (ecoa a query).
+      4. Extração das ligações .onion fora de <nav>/<header>/<footer>, com
+         ligações relativas e redirecionamentos resolvidos (search_filters).
+      A limpeza (hosts dos motores, navegação, spam, quotas) é feita depois,
+      em get_search_results.
 
     Porquê capturar todas as excepções silenciosamente?
       - Motores .onion ficam offline com frequência (timeout, circuitos Tor
@@ -263,52 +269,88 @@ def fetch_search_results(endpoint, query, session=None):
         response = session.get(url, headers=headers, timeout=(15, 40))
 
         if response.status_code == 200:
-            # Usar BeautifulSoup para parsing tolerante a HTML malformado,
-            # comum em serviços .onion que não seguem standards rigorosamente.
-            soup = BeautifulSoup(response.text, "html.parser")
-            links = []
-
-            # Iterar sobre todas as âncoras da página.
-            # A abordagem genérica (sem selectores específicos por motor)
-            # funciona na maioria dos layouts de motores de pesquisa .onion,
-            # que tipicamente listam resultados como <a href="url.onion">título</a>.
-            for a in soup.find_all('a'):
-                try:
-                    href = a['href']
-                    title = a.get_text(strip=True)
-
-                    # Expressão regular para extrair URLs .onion completos,
-                    # incluindo path e query string se presentes.
-                    # O padrão [a-z0-9\.]+ cobre o hash v2/v3 do endereço .onion.
-                    link = re.findall(r'https?:\/\/[a-z0-9\.]+\.onion.*', href)
-
-                    if len(link) != 0:
-                        # Filtro de qualidade duplo:
-                        #   1. Excluir links que contenham "search" no URL —
-                        #      tipicamente são links internos do próprio motor
-                        #      de pesquisa (ex.: paginação, formulários).
-                        #   2. Exigir título com mais de 3 caracteres para
-                        #      descartar âncoras sem texto significativo
-                        #      (ícones, botões, etc.).
-                        if "search" not in link[0] and len(title) > 3:
-                            links.append({"title": title, "link": link[0]})
-                except:
-                    # Ignorar âncoras sem atributo href ou com atributos
-                    # inesperados — erros individuais não devem travar o loop.
-                    continue
-
+            html = response.text
+            final_url = getattr(response, "url", "") or url
+            # Uma página que não ecoa nenhum termo da query não é uma página de
+            # resultados (p. ex. o motor redirecionou para a página inicial):
+            # as suas ligações são navegação, não resultados.
+            if not sf.looks_like_results_page(html, query):
+                _set_detail(endpoint, "not_results_page", 0)
+                return [], True
+            links = [l for l in sf.extract_links(html, final_url) if len(l["title"]) > 3]
+            _set_detail(endpoint, "ok_results" if links else "ok_empty", len(links))
             return links, True
-        else:
-            # Código HTTP diferente de 200 (ex.: 403, 404, 503) — falha
-            # técnica do motor, devolver lista vazia sem lançar excepção.
-            return [], False
-    except:
+        # Código HTTP diferente de 200 (ex.: 403, 404, 503): falha técnica do motor.
+        _set_detail(endpoint, "http_error", 0)
+        return [], False
+    except Exception:  # noqa: BLE001 — um motor em baixo não pode parar a pesquisa
         # Qualquer excepção de rede (timeout, recusa de ligação, erro SSL,
         # circuito Tor falhado) é uma falha técnica do motor.
+        _set_detail(endpoint, "exception", 0)
         return [], False
 
 
-_RE_ONION_DOMAIN = re.compile(r'https?://([a-z0-9.]+\.onion)')
+# Detalhe do desfecho por motor (além de "ok"/"failed"): ok_results, ok_empty,
+# nav_only, not_results_page, http_error, exception. Preenchido por
+# fetch_search_results e lido por get_search_results.
+_detail_lock = threading.Lock()
+_fetch_detail: dict[str, tuple[str, int]] = {}
+
+
+def _set_detail(endpoint: str, status: str, n: int) -> None:
+    with _detail_lock:
+        _fetch_detail[endpoint] = (status, n)
+
+
+# Domínios "irmãos" de motores conhecidos que aparecem como ligações nas páginas
+# de resultados mas não são resultados (p. ex. as categorias do diretório do
+# Amnesia, servidas noutro domínio). Acrescentam-se aos de "exclude_hosts" da config.
+KNOWN_SIBLING_HOSTS = {
+    "amnesia7u5odx5xbwtpnqk3edybgud5bmiagu75bnqx2crntw5kry7ad.onion": [
+        "amndir7jfxnt5glt2tsevwjlnwdvknttxygubw27ulq5c433en75piyd.onion",
+    ],
+}
+
+PER_HOST_CAP = 3
+
+# Estatísticas da última chamada a get_search_results, por motor:
+# {"status": ..., "raw": n, "nav_dropped": n, "engine_host_dropped": n, "spam_dropped": n, "kept": n}
+last_search_stats: dict[str, dict] = {}
+
+logger = logging.getLogger(__name__)
+
+
+def _excluded_hosts(all_engines: list[dict]) -> set[str]:
+    """Hosts de TODOS os motores configurados (ativos ou não), dos seus irmãos e de exclude_hosts."""
+    hosts = set()
+    for e in all_engines:
+        h = sf.onion_host(e.get("url", ""))
+        if h:
+            hosts.add(h)
+            hosts.update(KNOWN_SIBLING_HOSTS.get(h, []))
+        hosts.update(x.lower() for x in e.get("exclude_hosts", []) or [])
+    return hosts
+
+
+def _is_other_engine_search(link: str) -> bool:
+    parts = urlsplit(link)
+    return "search" in parts.path.lower() and any(k in parse_qs(parts.query) for k in ("q", "query", "s", "search"))
+
+
+def _clean_engine_results(name: str, results: list[dict], excluded: set[str]) -> tuple[list[dict], dict]:
+    stats = {"raw": len(results), "nav_dropped": 0, "engine_host_dropped": 0, "spam_dropped": 0}
+    kept = []
+    for r in results:
+        if sf.onion_host(r["link"]) in excluded or _is_other_engine_search(r["link"]):
+            stats["engine_host_dropped"] += 1
+        elif sf.is_nav_title(r.get("title", "")):
+            stats["nav_dropped"] += 1
+        elif sf.is_spam_title(r.get("title", "")):
+            stats["spam_dropped"] += 1
+        else:
+            kept.append(r)
+    stats["kept"] = len(kept)
+    return kept, stats
 
 
 def get_search_results(refined_query, max_workers=5):
@@ -343,34 +385,41 @@ def get_search_results(refined_query, max_workers=5):
 
     active_urls = [e["url"] for e in simple_engines]
 
-    # Extrair domínios .onion dos motores de pesquisa para excluir meta-resultados
-    engine_domains = set()
-    for url_template in active_urls:
-        m = _RE_ONION_DOMAIN.search(url_template)
-        if m:
-            engine_domains.add(m.group(1))
+    # Hosts a excluir: todos os motores configurados (ativos ou não) e os seus
+    # domínios irmãos — as suas páginas são navegação, não resultados.
+    try:
+        from engine_manager import load_engines
+        all_engines = load_engines()
+    except Exception:  # noqa: BLE001
+        all_engines = active_engines
+    excluded = _excluded_hosts(all_engines)
 
-    results = []
+    per_engine: list[tuple[str, list[dict]]] = []
     engine_status: dict[str, str] = {}
+    stats_all: dict[str, dict] = {}
 
     shared_session = get_tor_session() if active_urls else None
 
     if active_urls:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_name = {
-                executor.submit(fetch_search_results, e["url"], refined_query, shared_session): e["name"]
+            future_to_engine = {
+                executor.submit(fetch_search_results, e["url"], refined_query, shared_session): e
                 for e in simple_engines
             }
-
-            for future in as_completed(future_to_name):
-                name = future_to_name[future]
+            for future in as_completed(future_to_engine):
+                e = future_to_engine[future]
+                name = e["name"]
                 result_urls, ok = future.result()
+                # "ok"/"failed" mede a disponibilidade do motor (EQ-06); a
+                # qualidade da resposta fica no detalhe (stats).
                 engine_status[name] = "ok" if ok else "failed"
-                # Proveniência: sem registar que motor devolveu cada fonte não é
-                # possível medir os "motores produtivos" do EQ-02 (Capítulo 6).
-                for r in result_urls:
-                    r["found_by"] = [name]
-                results.extend(result_urls)
+                kept, stats = _clean_engine_results(name, result_urls, excluded)
+                detail = _fetch_detail.get(e["url"], ("ok_results" if ok else "exception", 0))[0]
+                if ok and result_urls and not kept:
+                    detail = "nav_only"
+                stats["status"] = detail
+                stats_all[name] = stats
+                per_engine.append((name, kept))
 
     # Despacho para forum adapters (sequencial — cada adapter gere o seu rate
     # limit interno e o número de fóruns activos é tipicamente pequeno).
@@ -386,40 +435,25 @@ def get_search_results(refined_query, max_workers=5):
                     continue
                 try:
                     forum_results = adapter.search(refined_query)
-                    for r in forum_results:
-                        r["found_by"] = [engine["name"]]
-                    results.extend(forum_results)
                     engine_status[engine["name"]] = "ok"
+                    stats_all[engine["name"]] = {"status": "ok_results" if forum_results else "ok_empty",
+                                                 "raw": len(forum_results), "kept": len(forum_results)}
+                    per_engine.append((engine["name"], list(forum_results)))
                 except Exception:
                     # Falhas de um fórum não devem partir o resto da pesquisa,
                     # mas o motor conta como falhado para efeitos de EQ-06.
                     engine_status[engine["name"]] = "failed"
+                    stats_all[engine["name"]] = {"status": "exception", "raw": 0, "kept": 0}
                     continue
 
-    # Deduplicação + exclusão de meta-resultados (search engine pages)
-    # Ao deduplicar, os motores que devolveram a mesma fonte acumulam-se em
-    # "found_by" do primeiro resultado visto: um motor "devolveu" uma fonte
-    # mesmo que a cópia que ficou seja a de outro motor.
-    seen_links = {}
-    unique_results = []
+    # Junta os motores em rodízio (ordem estável; cada motor contribui antes
+    # de qualquer um repetir), deduplica por URL normalizado acumulando os
+    # motores em "found_by", e limita cada host a PER_HOST_CAP resultados.
+    unique_results = sf.interleave(per_engine, per_host_cap=PER_HOST_CAP)
 
-    for res in results:
-        link = res.get("link")
-        clean_link = link.rstrip('/')
-
-        if clean_link in seen_links:
-            kept = seen_links[clean_link]
-            for engine_name in res.get("found_by", []):
-                if engine_name not in kept.setdefault("found_by", []):
-                    kept["found_by"].append(engine_name)
-            continue
-
-        # Excluir resultados cujo domínio pertence a um motor de pesquisa
-        m = _RE_ONION_DOMAIN.search(link)
-        if m and m.group(1) in engine_domains:
-            continue
-
-        seen_links[clean_link] = res
-        unique_results.append(res)
-
+    global last_search_stats
+    last_search_stats = stats_all
+    dropped = sum(st.get("nav_dropped", 0) + st.get("engine_host_dropped", 0) + st.get("spam_dropped", 0)
+                  for st in stats_all.values())
+    logger.info("Pesquisa: %d resultados únicos; %d descartados (navegação/motores/spam).", len(unique_results), dropped)
     return unique_results, engine_status
