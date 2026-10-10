@@ -26,6 +26,7 @@ def fakes(monkeypatch, tmp_path):
     from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
     import engine_manager
+    import health
     import llm
     import llm_utils
     import pipeline
@@ -46,7 +47,8 @@ def fakes(monkeypatch, tmp_path):
         scrape.last_blocked_count = 0
         return {ONION_A: BODY, ONION_B: "texto sem o alvo " * 20}
 
-    engines = lambda: [{"name": "E1"}, {"name": "E2"}]  # noqa: E731
+    engines = lambda: [{"name": "E1", "url": "http://e1.onion/?q={query}"},  # noqa: E731
+                       {"name": "E2", "url": "http://e2.onion/?q={query}"}]
     monkeypatch.setattr(llm, "get_llm", fake_llm)
     monkeypatch.setattr(ui_pipeline, "get_llm", fake_llm)
     monkeypatch.setattr(search, "get_search_results", fake_search)
@@ -54,6 +56,11 @@ def fakes(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "get_active_engines", engines)
     monkeypatch.setattr(engine_manager, "get_active_engines", engines)
     monkeypatch.setattr(pipeline, "tor_available", lambda *a, **k: False)
+    # A Home verifica os motores na 1.ª carga se o Tor estiver ativo; o teste
+    # nunca pode chegar à rede, mesmo numa máquina com o Tor a correr.
+    monkeypatch.setattr(health, "check_tor_proxy",
+                        lambda: {"status": "down", "latency_ms": None, "error": "teste offline"})
+    monkeypatch.setattr(health, "check_search_engines", lambda *a, **k: [])
     monkeypatch.setattr(llm_utils, "get_model_choices", lambda: ["fake-model"])
     monkeypatch.chdir(tmp_path)  # investigations/ e logs/ ficam na pasta temporária
     return tmp_path
