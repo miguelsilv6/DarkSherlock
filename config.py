@@ -26,6 +26,11 @@ load_dotenv()
 # graças ao modelo leve embutido). Exemplo: http://localhost:11434
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
+# Versão do pipeline de investigação, gravada em cada investigação. Permite
+# separar, na avaliação, resultados obtidos com versões diferentes do código
+# ("1.0-legacy" = pipeline anterior à revisão geral de outubro de 2026).
+PIPELINE_VERSION = "1.0-legacy"
+
 # Parâmetros de inferência dos modelos Ollama (opcionais). Por omissão não se
 # passa nada e vale o que o servidor Ollama definir (num_ctx pequeno, p.ex.).
 # Para replicar os modelos embutidos (n_ctx 8192, max_tokens 2048,

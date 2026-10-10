@@ -52,6 +52,7 @@ from llm import (
     filter_scraped_by_relevance,
 )
 import llm as llm_module
+from config import PIPELINE_VERSION
 import scrape as scrape_module
 from llm_utils import get_model_choices
 from search import get_search_results
@@ -225,6 +226,7 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         "query": query,
         "refined_query": refined,
         "model": model_choice,
+        "pipeline_version": PIPELINE_VERSION,
         "preset": preset,
         "active_engines": active_engines,
         "sources": filtered,
