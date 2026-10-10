@@ -35,6 +35,7 @@ Formato de cada entrada:
 
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,44 +45,66 @@ _LOG_FILE = _LOG_DIR / "audit.jsonl"
 _APP_LOG_FILE = _LOG_DIR / "app.log"
 
 
+# Módulos da app cujos registos DEBUG vão para logs/app.log. As bibliotecas
+# externas só a partir de WARNING: em DEBUG, o urllib3 regista cada pedido via
+# Tor, o httpcore cada fragmento da resposta do Ollama, e o watchdog cada
+# evento do sistema de ficheiros.
+APP_LOGGERS = {
+    "llm", "llm_utils", "local_models", "search", "search_filters", "scrape", "safety",
+    "pipeline", "ui_pipeline", "engine_manager", "health", "report", "audit", "text_match",
+    "settings_state", "forum_adapters", "evaluation", "__main__", "run_scenarios",
+    "run_multi_model_eval", "run_refusal_ablation", "run_induced_resilience",
+}
+
+# Limite do app.log: 5 MB por ficheiro, 3 cópias rodadas (app.log.1 … .3) → ~20 MB.
+APP_LOG_MAX_BYTES = 5 * 1024 * 1024
+APP_LOG_BACKUPS = 3
+
+
+class _AppOrWarningFilter(logging.Filter):
+    """Deixa passar tudo dos módulos da app e só WARNING+ das bibliotecas externas."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.WARNING or record.name.split(".")[0] in APP_LOGGERS
+
+
 def setup_file_logging(level: int = logging.DEBUG) -> None:
     """
-    Configura um FileHandler no logger raiz para escrever em logs/app.log.
+    Escreve os registos da app em logs/app.log (consultável na página Debug).
 
-    Captura todas as mensagens de logging emitidas pelos módulos da aplicação
-    (incluindo os `logger.debug()` em scrape.py, search.py, etc.) num ficheiro
-    persistente que pode ser consultado na página de Debug.
+    - DEBUG só para os módulos da app (APP_LOGGERS); bibliotecas externas a partir
+      de WARNING.
+    - Ficheiro rotativo com limite (APP_LOG_MAX_BYTES × APP_LOG_BACKUPS).
+    - O watchdog fica em WARNING. O Streamlit vigia a pasta do projeto
+      recursivamente e o watchdog regista em DEBUG cada evento do sistema de
+      ficheiros — incluindo a escrita de cada linha neste log, o que gerava um
+      ciclo: cada linha escrita produzia outra (~2 MB/s, ~7 GB/hora com a app parada).
 
-    A função verifica se o handler já foi adicionado antes de o criar, para
-    evitar duplicação de entradas quando o Streamlit re-executa o script.
-
-    Args:
-        level: Nível mínimo de logging a capturar (padrão: DEBUG — captura tudo).
+    Não duplica o handler quando o Streamlit volta a correr o script.
     """
     _LOG_DIR.mkdir(exist_ok=True)
 
     root_logger = logging.getLogger()
-
-    # Evitar duplicar handlers em re-execuções do Streamlit:
-    # verificar se já existe um FileHandler apontando para app.log
     app_log_path = str(_APP_LOG_FILE.resolve())
     for handler in root_logger.handlers:
-        if isinstance(handler, logging.FileHandler):
-            if getattr(handler, "baseFilename", "") == app_log_path:
-                return  # Handler já configurado — não duplicar
+        if isinstance(handler, logging.FileHandler) and getattr(handler, "baseFilename", "") == app_log_path:
+            return  # já configurado
 
-    # Criar e configurar o FileHandler
-    handler = logging.FileHandler(_APP_LOG_FILE, encoding="utf-8")
+    handler = RotatingFileHandler(_APP_LOG_FILE, maxBytes=APP_LOG_MAX_BYTES,
+                                  backupCount=APP_LOG_BACKUPS, encoding="utf-8")
     handler.setLevel(level)
-    fmt = logging.Formatter(
+    handler.addFilter(_AppOrWarningFilter())
+    handler.setFormatter(logging.Formatter(
         "%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    handler.setFormatter(fmt)
-
-    # Adicionar ao logger raiz para capturar logs de todos os módulos
+    ))
     root_logger.addHandler(handler)
-    root_logger.setLevel(level)
+
+    # O raiz só desce ao nível pedido para os registos da app chegarem ao handler;
+    # o filtro trava as bibliotecas. O watchdog é travado também na origem.
+    if root_logger.level == logging.NOTSET or root_logger.level > level:
+        root_logger.setLevel(level)
+    logging.getLogger("watchdog").setLevel(logging.WARNING)
 
 
 def log_investigation(data: dict) -> None:

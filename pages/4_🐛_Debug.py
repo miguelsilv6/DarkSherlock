@@ -47,6 +47,18 @@ _LOG_DIR = Path("logs")
 _AUDIT_LOG = _LOG_DIR / "audit.jsonl"
 _APP_LOG = _LOG_DIR / "app.log"
 
+
+def _rotated_app_logs() -> list:
+    """Cópias rodadas do app.log (app.log.1, app.log.2, ...) — ver audit.setup_file_logging."""
+    return sorted(_LOG_DIR.glob("app.log.*"))
+
+
+def _clear_app_log() -> None:
+    if _APP_LOG.exists():
+        _APP_LOG.write_text("", encoding="utf-8")
+    for old in _rotated_app_logs():
+        old.unlink(missing_ok=True)
+
 # ---------------------------------------------------------------------------
 # Cabeçalho da página
 # ---------------------------------------------------------------------------
@@ -66,9 +78,8 @@ with col_refresh:
 
 with col_clear_app:
     if st.button("🗑 Limpar App Log", use_container_width=True,
-                 help="Apaga o conteúdo de logs/app.log"):
-        if _APP_LOG.exists():
-            _APP_LOG.write_text("", encoding="utf-8")
+                 help="Apaga o conteúdo de logs/app.log e as cópias rodadas"):
+        _clear_app_log()
         st.success("logs/app.log limpo.")
         time.sleep(0.5)
         st.rerun()
@@ -85,9 +96,9 @@ with col_clear_audit:
 with col_clear_all:
     if st.button("💣 Limpar Tudo", use_container_width=True,
                  help="Apaga todos os ficheiros de log"):
-        for log_file in [_APP_LOG, _AUDIT_LOG]:
-            if log_file.exists():
-                log_file.write_text("", encoding="utf-8")
+        _clear_app_log()
+        if _AUDIT_LOG.exists():
+            _AUDIT_LOG.write_text("", encoding="utf-8")
         st.success("Todos os logs limpos.")
         time.sleep(0.5)
         st.rerun()
@@ -219,7 +230,10 @@ st.divider()
 
 st.subheader("Estado dos Ficheiros de Log")
 
-for log_path, label in [(_AUDIT_LOG, "audit.jsonl"), (_APP_LOG, "app.log")]:
+_log_files = [(_AUDIT_LOG, "audit.jsonl"), (_APP_LOG, "app.log")] + [(p, p.name) for p in _rotated_app_logs()]
+_total_mb = sum(p.stat().st_size for p, _ in _log_files if p.exists()) / (1024 * 1024)
+st.caption(f"Total em logs/: {_total_mb:.1f} MB (o app.log roda aos 5 MB e guarda 3 cópias).")
+for log_path, label in _log_files:
     if log_path.exists():
         size_kb = log_path.stat().st_size / 1024
         mtime = datetime.fromtimestamp(log_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
