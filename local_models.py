@@ -26,9 +26,13 @@ instaladas — `is_available()` reporta o estado e a UI degrada graciosamente.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 from config import MODELS_DIR, DEFAULT_BUILTIN_MODEL
+
+# Sem telemetria do huggingface_hub (respeita um valor já definido pelo utilizador).
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 logger = logging.getLogger(__name__)
 
@@ -173,11 +177,11 @@ def list_builtin_labels() -> list[str]:
     return list(BUILTIN_MODELS.keys()) if is_available() else []
 
 
-def is_downloaded(model_choice: str) -> bool:
-    """Verifica se o GGUF já está em cache, SEM o descarregar."""
+def cached_path(model_choice: str) -> str | None:
+    """Caminho do GGUF na cache local, ou None — SEM rede."""
     spec = BUILTIN_MODELS.get(model_choice)
     if spec is None:
-        return False
+        return None
     try:
         from huggingface_hub import try_to_load_from_cache  # import tardio
 
@@ -186,11 +190,15 @@ def is_downloaded(model_choice: str) -> bool:
             filename=spec["filename"],
             cache_dir=str(MODELS_DIR),
         )
-        # try_to_load_from_cache devolve o path (str) se existir, ou um
-        # sentinel/None caso contrário.
-        return isinstance(path, str)
+        # devolve o path (str) se existir, ou um sentinel/None caso contrário
+        return path if isinstance(path, str) and os.path.isfile(path) else None
     except Exception:  # noqa: BLE001
-        return False
+        return None
+
+
+def is_downloaded(model_choice: str) -> bool:
+    """Verifica se o GGUF já está em cache, SEM o descarregar."""
+    return cached_path(model_choice) is not None
 
 
 def params_b(model_choice: str) -> float | None:
@@ -225,7 +233,7 @@ def ensure_downloaded(model_choice: str) -> str:
     Garante que o GGUF do modelo está em disco e devolve o caminho local.
 
     Descarrega de Hugging Face na primeira utilização (pode demorar — ficheiros
-    de centenas de MB). Chamadas seguintes resolvem da cache instantaneamente.
+    de centenas de MB). Chamadas seguintes usam a cache, sem pedidos de rede.
 
     Levanta:
         RuntimeError: se llama.cpp/huggingface_hub não estiverem instalados.
@@ -237,6 +245,13 @@ def ensure_downloaded(model_choice: str) -> str:
             "Instala as dependências: pip install -r requirements.txt"
         )
     spec = BUILTIN_MODELS[model_choice]  # KeyError propositado se inválido
+
+    # Já em cache: usa-o sem contactar o huggingface.co. O hf_hub_download
+    # confirmaria a revisão por HTTP em cada investigação — tráfego em clearnet,
+    # fora do Tor, a partir da máquina do investigador, sem necessidade.
+    local = cached_path(model_choice)
+    if local:
+        return local
 
     from huggingface_hub import hf_hub_download  # import tardio
 
