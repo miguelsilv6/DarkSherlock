@@ -299,7 +299,7 @@ def main():
 
                     print(
                         f"[{model_choice}][{scenario['id']}] execução {run_idx}/{args.runs} "
-                        f"— query: '{scenario['query']}' ...",
+                        f"— query: {base.shown_query(scenario)} ...",
                         end=" ", flush=True,
                     )
                     try:

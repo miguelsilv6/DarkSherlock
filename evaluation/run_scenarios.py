@@ -46,29 +46,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from llm import get_llm
 import pipeline
+import scenarios as scenarios_mod
 from llm_utils import get_model_choices
 from audit import log_investigation, setup_file_logging
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Os 12 cenários — Tabela 12 do relatório, reproduzidos literalmente
-# (query e preset exatamente como especificados no Capítulo 6).
+# Cenários: os reais de evaluation/scenarios.local.json (fora do Git) se o
+# ficheiro existir, senão os 12 sintéticos da Tabela 12 (ver scenarios.py).
 # ---------------------------------------------------------------------------
-SCENARIOS = [
-    {"id": "A1", "domain": "Threat Intel",        "preset": "threat_intel",         "query": "lockbit leak site"},
-    {"id": "A2", "domain": "Threat Intel",        "preset": "threat_intel",         "query": "credential dump forum 2026"},
-    {"id": "A3", "domain": "Threat Intel",        "preset": "threat_intel",         "query": "bitcoin mixer service"},
-    {"id": "B1", "domain": "Ransomware/Malware",  "preset": "ransomware_malware",   "query": "Akira ransomware"},
-    {"id": "B2", "domain": "Ransomware/Malware",  "preset": "ransomware_malware",   "query": "cobalt strike beacon"},
-    {"id": "B3", "domain": "Ransomware/Malware",  "preset": "ransomware_malware",   "query": "smokeloader access broker"},
-    {"id": "C1", "domain": "Identidade Pessoal",  "preset": "personal_identity",    "query": "john.doe@example-corp.test breach"},
-    {"id": "C2", "domain": "Identidade Pessoal",  "preset": "personal_identity",    "query": "example-corp.test data leak"},
-    {"id": "C3", "domain": "Identidade Pessoal",  "preset": "personal_identity",    "query": "NIF 999999999 dark web"},
-    {"id": "D1", "domain": "Espionagem Corporativa", "preset": "corporate_espionage", "query": "example-corp source code leak"},
-    {"id": "D2", "domain": "Espionagem Corporativa", "preset": "corporate_espionage", "query": "example-corp API key dump"},
-    {"id": "D3", "domain": "Espionagem Corporativa", "preset": "corporate_espionage", "query": "example-corp internal wiki dump"},
-]
+SCENARIOS, SCENARIO_SOURCE = scenarios_mod.load()
+
+
+
+def shown_query(scenario: dict) -> str:
+    """O que se mostra no terminal: a query sintética, ou só o pseudónimo se o cenário for real."""
+    if SCENARIO_SOURCE == "local":
+        return f"[{scenario.get('label') or 'cenário real'}]"
+    return f"'{scenario['query']}'"
+
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 INVESTIGATIONS_DIR = Path("investigations")
@@ -192,7 +189,9 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
 
 def _save(scenario: dict, r: "pipeline.PipelineResult") -> str:
     """JSON da investigação no formato da app (recarregável na Home), com o cenário do Cap. 6."""
-    record = pipeline.investigation_record(r, scenario_id=scenario["id"], domain=scenario["domain"])
+    record = pipeline.investigation_record(r, scenario_id=scenario["id"], domain=scenario["domain"],
+                                           scenario_source=SCENARIO_SOURCE,
+                                           scenario_label=scenario.get("label", ""))
     return pipeline.save_investigation(record, INVESTIGATIONS_DIR, prefix=f"eval_{scenario['id']}")
 
 
@@ -230,6 +229,11 @@ def main():
         model_choice = choices[0]
 
     print(f"Modelo: {model_choice}")
+    if SCENARIO_SOURCE == "local":
+        print("Cenários REAIS (scenarios.local.json): no terminal mostra-se o pseudónimo, não a query; "
+              "rasura os resultados com evaluation/redact.py antes de os usar no relatório.")
+    else:
+        print("Cenários sintéticos (sem evaluation/scenarios.local.json).")
     print(f"Cenários: {[s['id'] for s in scenarios]} × {args.runs} execuções cada = {len(scenarios) * args.runs} investigações\n")
 
     # Uma única instância do LLM reutilizada em todas as execuções — replica
@@ -260,7 +264,8 @@ def main():
                     all_rows.append({"scenario_id": scenario["id"], "run_idx": run_idx, "error": msg})
                     continue
 
-                print(f"[{scenario['id']}] execução {run_idx}/{args.runs} — query: '{scenario['query']}' ...", end=" ", flush=True)
+                print(f"[{scenario['id']}] execução {run_idx}/{args.runs} — query: {shown_query(scenario)} ...",
+                      end=" ", flush=True)
                 try:
                     row = run_one(scenario, model_choice, llm)
                     row["run_idx"] = run_idx

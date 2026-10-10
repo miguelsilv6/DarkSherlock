@@ -209,3 +209,10 @@ evaluation/ground_truth/
 
 # Registo de URLs bloqueados pela salvaguarda ética (para denúncia; nunca versionar)
 referrals/
+
+# Avaliação com dados reais (casos públicos): cenários reais, resultados por
+# execução (incluem relatórios gerados) e saídas rasuradas — nunca versionar.
+# O formato está em evaluation/scenarios.example.json (versionado).
+evaluation/scenarios.local.json
+evaluation/results/
+evaluation/redacted/
