@@ -14,6 +14,13 @@ Limites (declarar na metodologia):
   - Não filtra a lista de resultados de pesquisa nem o Top-K: só impede o pedido.
   - O registo guarda apenas o padrão que casou, nunca o título bloqueado.
 
+Registo para denúncia:
+  - Cada bloqueio é acrescentado a referrals/csam_referrals.jsonl (fora do Git,
+    permissões 600) com: data/hora UTC, URL, motor(es) que o devolveram, padrão
+    que casou e origem ("scrape" ou "redirect"). NUNCA se guarda título nem
+    conteúdo. O ficheiro serve para encaminhar os endereços às autoridades
+    competentes, sem que ninguém precise de aceder ao material.
+
 Configuração:
   - Padrões por omissão: DEFAULT_PATTERNS (expressões regulares, sem distinguir
     maiúsculas de minúsculas, aplicadas ao título e ao URL).
@@ -23,14 +30,19 @@ Configuração:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 EXTRA_PATTERNS_FILE = Path(__file__).resolve().parent / "config" / "blocked_terms.txt"
+REFERRALS_FILE = Path(__file__).resolve().parent / "referrals" / "csam_referrals.jsonl"
+_referral_lock = threading.Lock()
 
 DEFAULT_PATTERNS = [
     r"child[\s_-]*porn",
@@ -94,3 +106,33 @@ def split_blocked(items: list[dict]) -> tuple[list[dict], list[tuple[dict, str]]
         else:
             allowed.append(it)
     return allowed, blocked
+
+
+def log_referral(url: str, engines=None, pattern: str = "", source: str = "scrape") -> None:
+    """Acrescenta um bloqueio ao registo para denúncia (sem título nem conteúdo)."""
+    if isinstance(engines, str):
+        engines = [engines]
+    entry = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "url": url,
+        "engines": list(engines or []),
+        "pattern": pattern,
+        "source": source,
+    }
+    try:
+        with _referral_lock:
+            REFERRALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(REFERRALS_FILE.parent, 0o700)
+            except OSError:
+                pass
+            new = not REFERRALS_FILE.exists()
+            with open(REFERRALS_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            if new:
+                try:
+                    os.chmod(REFERRALS_FILE, 0o600)
+                except OSError:
+                    pass
+    except OSError as e:
+        logger.warning("Não foi possível escrever o registo de denúncia: %s", e)

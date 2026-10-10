@@ -1,10 +1,8 @@
 """Investigation Pipeline — full visibility into each stage."""
 
-import base64
 import json
-import time
-import uuid
 import streamlit as st
+import settings_state
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,12 +15,10 @@ def _fmt_ms(ms: int) -> str:
         return f"{m}m{s:02d}s"
     return f"{total_s}s" if total_s >= 1 else f"{ms}ms"
 
-from scrape import scrape_multiple
-from search import get_search_results
-from llm_utils import BufferedStreamingHandler, get_model_choices
-from llm import get_llm, refine_query, filter_results, generate_summary, filter_scraped_by_relevance, PRESET_PROMPTS
+import pipeline
 from engine_manager import get_active_engines
-from report import compute_integrity_hashes, generate_forensic_pdf
+from report import generate_forensic_pdf, investigation_pdf_data
+from ui_pipeline import complete_dict, render_links, run_with_ui
 from audit import log_investigation, setup_file_logging
 
 # Configura o logging para ficheiro (captura debug/info de todos os módulos)
@@ -35,6 +31,12 @@ st.set_page_config(
     page_icon="🔍",
     initial_sidebar_state="expanded",
 )
+
+
+def _stage_error(stage: str, err: Exception) -> None:
+    """Mostra o erro de uma etapa e para a execução (em vez de um traceback)."""
+    st.error(f"Failed to {stage}.\n\nError: {str(err).strip() or err.__class__.__name__}")
+    st.stop()
 
 settings = render_sidebar()
 model = settings["model"]
@@ -64,47 +66,6 @@ def load_investigations():
         except Exception:
             continue
     return investigations
-
-
-def save_investigation(
-    query, refined_query, model_name, preset_label, sources, summary,
-    audit_id="", active_engines=None, integrity=None, scraped_content=None,
-    engine_status=None, search_results=None,
-):
-    """Guarda investigação completa com campos forenses (hashes, timestamps, audit_id).
-
-    scraped_content: texto scrapeado {url: conteúdo} tal como foi passado a
-    compute_integrity_hashes() — sem isto os hashes em "integrity" não são
-    verificáveis depois (ver EQ-05.2, Capítulo 6). engine_status: estado por
-    motor de pesquisa ("ok"/"failed") desta execução, para EQ-06.
-    search_results: lista completa de fontes recuperadas (antes do filtro por
-    LLM), cada uma com "found_by"; "sources" só guarda a lista filtrada, e sem
-    a completa o recall e os motores produtivos do EQ-02 não são mensuráveis.
-    """
-    INVESTIGATIONS_DIR.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fname = f"investigation_{timestamp}.json"
-    data = {
-        "audit_id": audit_id,
-        "timestamp": datetime.now().isoformat(),
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "query": query,
-        "refined_query": refined_query,
-        "model": model_name,
-        "preset": preset_label,
-        "active_engines": active_engines or [],
-        "sources": sources,
-        "summary": summary,
-        "integrity": integrity or {},
-        "scraped_content": scraped_content or {},
-        "engine_status": engine_status or {},
-        "search_results": search_results or [],
-    }
-    (INVESTIGATIONS_DIR / fname).write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    return fname
 
 
 st.sidebar.divider()
@@ -175,10 +136,12 @@ def _sync_preset_inv():
     """Callback on_change das pills → sincroniza com o selectbox da sidebar."""
     val = st.session_state.get("preset_pills")
     if val:
-        st.session_state["preset_select"] = val.split("  ", 1)[1]
+        label = val.split("  ", 1)[1]
+        st.session_state["preset_select"] = label
+        st.session_state[settings_state.PREFIX + "preset_select"] = label
 
 
-_current_label_inv = st.session_state.get("preset_select", _PRESET_LABELS_INV[0])
+_current_label_inv = settings_state.get("preset_select", _PRESET_LABELS_INV[0])
 _default_idx_inv = (
     _PRESET_LABELS_INV.index(_current_label_inv)
     if _current_label_inv in _PRESET_LABELS_INV
@@ -233,20 +196,7 @@ if "loaded_investigation" in st.session_state and not run_button:
     st.divider()
 
     # Botões de download — regenera o PDF a partir dos dados guardados
-    _inv_pdf_data = {
-        "audit_id": inv.get("audit_id", ""),
-        "query": inv["query"],
-        "refined_query": inv["refined_query"],
-        "model": inv["model"],
-        "preset": inv["preset"],
-        "timestamp_utc": inv.get("timestamp_utc", inv["timestamp"]),
-        "active_engines": inv.get("active_engines", []),
-        "sources": inv["sources"],
-        "integrity": inv.get("integrity", {}),
-        "summary": inv["summary"],
-        "results_found": len(inv["sources"]),
-        "results_scraped": len(inv["sources"]),
-    }
+    _inv_pdf_data = investigation_pdf_data(inv)
     _inv_pdf_bytes = generate_forensic_pdf(_inv_pdf_data)
     _inv_now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     _dl1, _dl2 = st.columns(2)
@@ -272,287 +222,78 @@ if "loaded_investigation" in st.session_state and not run_button:
         st.rerun()
 
 
+def _render_result(pc: dict, *, summary_shown: bool, key_prefix: str) -> None:
+    """Notes, Sources, Findings e downloads de uma investigação acabada de correr.
+
+    summary_shown: o relatório já está no ecrã (escrito durante o streaming) e não se repete.
+    key_prefix: evita colisão das keys dos botões entre o desenho imediato e o persistente.
+    """
+    with st.expander("Notes", expanded=False):
+        st.markdown(f"**Refined Query:** `{pc['refined']}`")
+        st.markdown(f"**Model:** `{pc['model']}` | **Domain:** {pc['preset_label']}")
+        st.markdown(
+            f"**Results found:** {pc['results_count']} | "
+            f"**Filtered to:** {len(pc['filtered'])} | "
+            f"**Scraped:** {pc['scraped_count']}"
+        )
+    with st.expander(f"Sources ({len(pc['filtered'])} results)", expanded=False):
+        render_links(pc["filtered"])
+    if not summary_shown:
+        st.subheader("Findings", divider="gray")
+        st.markdown(pc["summary"])
+    st.divider()
+
+    pdf_bytes = generate_forensic_pdf({
+        "audit_id": pc["audit_id"],
+        "query": pc["query"],
+        "refined_query": pc["refined"],
+        "model": pc["model"],
+        "preset": pc["preset_label"],
+        "timestamp_utc": pc.get("timestamp_utc") or datetime.now(timezone.utc).isoformat(),
+        "active_engines": pc["active_engines"],
+        "sources": pc["filtered"],
+        "integrity": pc["integrity"],
+        "summary": pc["summary"],
+        "results_found": pc["results_count"],
+        "results_scraped": pc["scraped_count"],
+        "scraped_content": pc.get("scraped_content", {}),
+    })
+    now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    dl1, dl2 = st.columns(2)
+    dl1.download_button(
+        label="⬇ Download Relatório PDF",
+        data=pdf_bytes,
+        file_name=f"relatorio_{pc['audit_id'][:8]}_{now}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+        key=f"{key_prefix}dl_pdf",
+    )
+    dl2.download_button(
+        label="⬇ Download Summary MD",
+        data=pc["summary"].encode(),
+        file_name=f"summary_{now}.md",
+        mime="text/markdown",
+        use_container_width=True,
+        key=f"{key_prefix}dl_md",
+    )
+
+
 # --- Pipeline Execution ---
 if run_button and query:
     st.session_state.pop("loaded_investigation", None)
     st.session_state.pop("pipeline_complete", None)
-    for k in ["refined", "results", "filtered", "scraped", "streamed_summary"]:
-        st.session_state.pop(k, None)
 
-    pipeline_start = time.time()
+    # As 6 etapas (ui_pipeline.py), com a lógica de pipeline.py — a mesma da Home e da avaliação.
+    run, findings_container = run_with_ui(query, settings, on_error=_stage_error)
 
-    # Stage 1 — Load LLM
-    with st.status("**Stage 1/6** — Loading LLM...", expanded=True) as status:
-        t0 = time.time()
-        try:
-            llm = get_llm(model)
-            elapsed = round((time.time() - t0) * 1000)
-            status.update(label=f"**Stage 1/6** — LLM loaded: `{model}` ({_fmt_ms(elapsed)})", state="complete")
-        except Exception as e:
-            status.update(label=f"**Stage 1/6** — LLM failed", state="error")
-            st.error(f"Failed to load LLM: {e}")
-            st.stop()
+    _fname = pipeline.save_investigation(
+        pipeline.investigation_record(run, preset_label=selected_preset_label), INVESTIGATIONS_DIR)
+    log_investigation(pipeline.audit_record(run, preset_label=selected_preset_label))
 
-    # Stage 2 — Refine Query
-    with st.status("**Stage 2/6** — Refining query...", expanded=True) as status:
-        t0 = time.time()
-        try:
-            st.session_state.refined = refine_query(llm, query, preset=selected_preset)
-            elapsed = round((time.time() - t0) * 1000)
-            st.write(f"Original: `{query}`")
-            st.write(f"Refined: `{st.session_state.refined}`")
-            status.update(label=f"**Stage 2/6** — Query refined ({_fmt_ms(elapsed)})", state="complete")
-        except Exception as e:
-            status.update(label=f"**Stage 2/6** — Query refinement failed", state="error")
-            st.error(f"Failed to refine query: {e}")
-            st.stop()
-
-    # Stage 3 — Search Dark Web
-    with st.status(f"**Stage 3/6** — Searching {len(active_engines)} engines...", expanded=True) as status:
-        t0 = time.time()
-        # search.py já deduplica os resultados por URL — não é necessário
-        # repetir o processo aqui. A deduplicação dupla era redundante e O(2n).
-        # Query passa intacta — encoding URL é feito em `fetch_search_results`
-        # para engines simples; adapters recebem a query original.
-        st.session_state.results, st.session_state.engine_status = get_search_results(
-            st.session_state.refined, max_workers=threads
-        )
-        if len(st.session_state.results) > max_results:
-            st.session_state.results = st.session_state.results[:max_results]
-        # Estampar timestamp UTC de recolha em cada resultado
-        retrieved_at_utc = datetime.now(timezone.utc).isoformat()
-        for r in st.session_state.results:
-            r["retrieved_at_utc"] = retrieved_at_utc
-        elapsed = round((time.time() - t0) * 1000)
-        st.write(f"Found **{len(st.session_state.results)}** results across {len(active_engines)} engines")
-        status.update(
-            label=f"**Stage 3/6** — {len(st.session_state.results)} results found ({_fmt_ms(elapsed)})",
-            state="complete",
-        )
-
-    # Stage 4 — Filter Results
-    with st.status("**Stage 4/6** — Filtering results with LLM...", expanded=True) as status:
-        t0 = time.time()
-        st.session_state.filtered = filter_results(
-            llm, st.session_state.refined, st.session_state.results
-        )
-        if len(st.session_state.filtered) > max_scrape:
-            st.session_state.filtered = st.session_state.filtered[:max_scrape]
-        elapsed = round((time.time() - t0) * 1000)
-        st.write(f"Filtered to **{len(st.session_state.filtered)}** most relevant results")
-        with st.expander("View filtered results"):
-            st.caption("🧅 Links .onion: copia e abre no Tor Browser")
-            for i, item in enumerate(st.session_state.filtered, 1):
-                title = item.get("title", "Untitled")
-                link = item.get("link", "")
-                if ".onion" in link:
-                    st.markdown(f"**{i}. {title}**")
-                    st.code(link, language=None)
-                else:
-                    st.markdown(f"{i}. [{title}]({link})")
-        status.update(
-            label=f"**Stage 4/6** — Filtered to {len(st.session_state.filtered)} results ({_fmt_ms(elapsed)})",
-            state="complete",
-        )
-
-    # Stage 5 — Scrape Content
-    with st.status(f"**Stage 5/6** — Scraping {len(st.session_state.filtered)} pages...", expanded=True) as status:
-        t0 = time.time()
-        st.session_state.scraped = scrape_multiple(
-            st.session_state.filtered, max_workers=threads
-        )
-        # Filter out failed scrapes (returned only the page title, no actual content)
-        meaningful_scraped = {
-            url: content
-            for url, content in st.session_state.scraped.items()
-            if len(content) > 150
-        }
-
-        # Filtra por relevância: descarta fontes cujo conteúdo scrapeado
-        # não menciona nenhuma keyword da query original.
-        pre_relevance_count = len(meaningful_scraped)
-        meaningful_scraped = filter_scraped_by_relevance(query, meaningful_scraped)
-        relevance_removed = pre_relevance_count - len(meaningful_scraped)
-
-        # Estampar timestamp UTC de scraping e calcular hashes de integridade
-        scraped_at_utc = datetime.now(timezone.utc).isoformat()
-        for item in st.session_state.filtered:
-            if item.get("link", "") in meaningful_scraped:
-                item["scraped_at_utc"] = scraped_at_utc
-        integrity = compute_integrity_hashes(meaningful_scraped)
-        st.session_state.integrity = integrity
-
-        elapsed = round((time.time() - t0) * 1000)
-        scraped_count = len(meaningful_scraped)
-        failed_count = len(st.session_state.scraped) - scraped_count
-        note = f" ({failed_count} inaccessible pages removed)" if failed_count else ""
-        relevance_note = f" ({relevance_removed} irrelevant pages removed)" if relevance_removed else ""
-        st.write(f"Scraped **{scraped_count}** pages with content{note}{relevance_note}")
-        st.caption(f"Hash global SHA-256: `{integrity['overall_sha256'][:16]}...`")
-
-        # Expander com conteúdo recolhido por fonte — auditabilidade e transparência
-        with st.expander(f"📄 Conteúdo recolhido por fonte ({scraped_count})", expanded=False):
-            st.caption("Texto extraído de cada página — o LLM lê e analisa este conteúdo na Etapa 6/6")
-            for url, content in list(meaningful_scraped.items()):
-                title = next(
-                    (r.get("title", "Sem título") for r in st.session_state.filtered
-                     if r.get("link") == url),
-                    "Sem título",
-                )
-                st.markdown(f"**{title}**")
-                if ".onion" in url:
-                    st.code(url, language=None)
-                else:
-                    st.markdown(f"`{url}`")
-                excerpt = content[:500].strip()
-                if len(content) > 500:
-                    excerpt += " …"
-                st.markdown(f"*{excerpt}*")
-                st.divider()
-
-        status.update(
-            label=f"**Stage 5/6** — {scraped_count} pages scraped ({_fmt_ms(elapsed)})",
-            state="complete",
-        )
-
-    # Stage 6 — Generate Summary
-    st.session_state.streamed_summary = ""
-
-    findings_container = st.container()
+    st.success(f"Pipeline completed in {_fmt_ms(run.total_ms)} — saved as `{_fname}`")
+    st.session_state["pipeline_complete"] = complete_dict(run, selected_preset_label, _fname)
     with findings_container:
-        st.subheader("Findings", divider="gray")
-        summary_slot = st.empty()
-
-    def ui_emit(chunk):
-        st.session_state.streamed_summary += chunk
-        summary_slot.markdown(st.session_state.streamed_summary)
-
-    with st.status("**Stage 6/6** — Generating intelligence summary...", expanded=True) as status:
-        t0 = time.time()
-        stream_handler = BufferedStreamingHandler(ui_callback=ui_emit)
-        llm.callbacks = [stream_handler]
-        # Captura o retorno como fonte autoritativa: backends sem streaming
-        # (e.g. alguns llama.cpp) não disparam o callback, o que deixaria
-        # streamed_summary vazio e produziria um relatório em branco.
-        _result_text = generate_summary(
-            llm,
-            query,
-            meaningful_scraped,
-            preset=selected_preset,
-            custom_instructions=custom_instructions,
-        )
-        if not st.session_state.streamed_summary and _result_text:
-            st.session_state.streamed_summary = _result_text
-            summary_slot.markdown(_result_text)
-        elapsed = round((time.time() - t0) * 1000)
-        status.update(
-            label=f"**Stage 6/6** — Summary generated ({_fmt_ms(elapsed)})",
-            state="complete",
-        )
-
-    total_elapsed = round(time.time() - pipeline_start, 1)
-    pipeline_ms = int(total_elapsed * 1000)
-    audit_id = str(uuid.uuid4())
-    integrity = st.session_state.get("integrity", {})
-
-    _fname = save_investigation(
-        query=query,
-        refined_query=st.session_state.refined,
-        model_name=model,
-        preset_label=selected_preset_label,
-        sources=st.session_state.filtered,
-        summary=st.session_state.streamed_summary,
-        audit_id=audit_id,
-        active_engines=[e["name"] for e in active_engines],
-        integrity=integrity,
-        scraped_content=meaningful_scraped,
-        engine_status=st.session_state.get("engine_status", {}),
-        search_results=st.session_state.get("results", []),
-    )
-
-    _engine_status = st.session_state.get("engine_status", {})
-    log_investigation({
-        "audit_id": audit_id,
-        "query": query,
-        "refined_query": st.session_state.refined,
-        "model": model,
-        "preset": selected_preset_label,
-        "engines_active": [e["name"] for e in active_engines],
-        "results_found": len(st.session_state.results),
-        "results_filtered": len(st.session_state.filtered),
-        "results_scraped": scraped_count,
-        "summary_length_chars": len(st.session_state.streamed_summary),
-        "pipeline_duration_ms": pipeline_ms,
-        "errors": [],
-        "engines_attempted": len(_engine_status),
-        "engines_failed": sum(1 for v in _engine_status.values() if v == "failed"),
-    })
-
-    st.success(f"Pipeline completed in {_fmt_ms(pipeline_ms)} — saved as `{_fname}`")
-
-    # Guarda dados para apresentação persistente (sobrevive a reruns)
-    st.session_state["pipeline_complete"] = {
-        "audit_id": audit_id,
-        "query": query,
-        "refined": st.session_state.refined,
-        "model": model,
-        "preset_label": selected_preset_label,
-        "filtered": st.session_state.filtered,
-        "results_count": len(st.session_state.results),
-        "scraped_count": scraped_count,
-        "summary": st.session_state.streamed_summary,
-        "integrity": integrity,
-        "active_engines": [e["name"] for e in active_engines],
-        "pipeline_ms": pipeline_ms,
-        "fname": _fname,
-    }
-
-    # Apresentação inline imediata (durante o run do pipeline)
-    with st.expander("Notes", expanded=False):
-        st.markdown(f"**Refined Query:** `{st.session_state.refined}`")
-        st.markdown(f"**Model:** `{model}` | **Domain:** {selected_preset_label}")
-        st.markdown(
-            f"**Results found:** {len(st.session_state.results)} | "
-            f"**Filtered to:** {len(st.session_state.filtered)} | "
-            f"**Scraped:** {scraped_count}"
-        )
-
-    with findings_container:
-        st.markdown(st.session_state.streamed_summary)
-        st.divider()
-
-        pdf_data = {
-            "audit_id": audit_id,
-            "query": query,
-            "refined_query": st.session_state.refined,
-            "model": model,
-            "preset": selected_preset_label,
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "active_engines": [e["name"] for e in active_engines],
-            "sources": st.session_state.filtered,
-            "integrity": integrity,
-            "summary": st.session_state.streamed_summary,
-            "results_found": len(st.session_state.results),
-            "results_scraped": scraped_count,
-        }
-        pdf_bytes = generate_forensic_pdf(pdf_data)
-
-        now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        dl_col1, dl_col2 = st.columns(2)
-        dl_col1.download_button(
-            label="⬇ Download Relatório PDF",
-            data=pdf_bytes,
-            file_name=f"relatorio_{audit_id[:8]}_{now}.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
-        dl_col2.download_button(
-            label="⬇ Download Summary MD",
-            data=st.session_state.streamed_summary.encode(),
-            file_name=f"summary_{now}.md",
-            mime="text/markdown",
-            use_container_width=True,
-        )
+        _render_result(st.session_state["pipeline_complete"], summary_shown=True, key_prefix="run_")
 
 
 # ---------------------------------------------------------------------------
@@ -560,64 +301,5 @@ if run_button and query:
 # ---------------------------------------------------------------------------
 if "pipeline_complete" in st.session_state and not run_button and "loaded_investigation" not in st.session_state:
     _pc = st.session_state["pipeline_complete"]
-
     st.success(f"Pipeline completed in {_fmt_ms(_pc['pipeline_ms'])} — saved as `{_pc['fname']}`")
-
-    with st.expander("Notes", expanded=False):
-        st.markdown(f"**Refined Query:** `{_pc['refined']}`")
-        st.markdown(f"**Model:** `{_pc['model']}` | **Domain:** {_pc['preset_label']}")
-        st.markdown(
-            f"**Results found:** {_pc['results_count']} | "
-            f"**Filtered to:** {len(_pc['filtered'])} | "
-            f"**Scraped:** {_pc['scraped_count']}"
-        )
-
-    with st.expander(f"Sources ({len(_pc['filtered'])} results)", expanded=False):
-        st.caption("🧅 Links .onion: copia e abre no Tor Browser")
-        for _i, _item in enumerate(_pc["filtered"], 1):
-            _title = _item.get("title", "Untitled")
-            _link = _item.get("link", "")
-            if ".onion" in _link:
-                st.markdown(f"**{_i}. {_title}**")
-                st.code(_link, language=None)
-            else:
-                st.markdown(f"{_i}. [{_title}]({_link})")
-
-    st.subheader("Findings", divider="gray")
-    st.markdown(_pc["summary"])
-    st.divider()
-
-    _pc_pdf_data = {
-        "audit_id": _pc["audit_id"],
-        "query": _pc["query"],
-        "refined_query": _pc["refined"],
-        "model": _pc["model"],
-        "preset": _pc["preset_label"],
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "active_engines": _pc["active_engines"],
-        "sources": _pc["filtered"],
-        "integrity": _pc["integrity"],
-        "summary": _pc["summary"],
-        "results_found": _pc["results_count"],
-        "results_scraped": _pc["scraped_count"],
-    }
-    _pc_pdf_bytes = generate_forensic_pdf(_pc_pdf_data)
-
-    _pc_now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    _pc_dl1, _pc_dl2 = st.columns(2)
-    _pc_dl1.download_button(
-        label="⬇ Download Relatório PDF",
-        data=_pc_pdf_bytes,
-        file_name=f"relatorio_{_pc['audit_id'][:8]}_{_pc_now}.pdf",
-        mime="application/pdf",
-        use_container_width=True,
-        key="pc_dl_pdf",
-    )
-    _pc_dl2.download_button(
-        label="⬇ Download Summary MD",
-        data=_pc["summary"].encode(),
-        file_name=f"summary_{_pc_now}.md",
-        mime="text/markdown",
-        use_container_width=True,
-        key="pc_dl_md",
-    )
+    _render_result(_pc, summary_shown=False, key_prefix="pc_")

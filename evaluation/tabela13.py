@@ -50,6 +50,8 @@ import statistics
 import sys
 from pathlib import Path
 
+import versions
+
 BASE = Path(__file__).resolve().parent
 DOMAINS = {"A": "Threat Intel", "B": "Ransomware/Malware", "C": "Identidade Pessoal", "D": "Espionagem Corporativa"}
 SCENARIO_IDS = [f"{d}{n}" for d in "ABCD" for n in "123"]
@@ -151,9 +153,13 @@ def _file_stamp(name: str) -> str:
     return f"{m.group(1)}{m.group(2)}" if m else ""
 
 
-def load_darksherlock(raw_glob: str, inv_dir: Path, model: str, since: str, runs: int):
-    """Devolve ({cenário: [linhas]}, avisos). Linhas de todos os lotes, dedupadas pela investigação."""
-    rows, seen, warnings, no_model = [], set(), [], 0
+def load_darksherlock(raw_glob: str, inv_dir: Path, model: str, since: str, runs: int,
+                      pipeline_version: str | None = None):
+    """Devolve ({cenário: [linhas]}, avisos). Linhas de todos os lotes, dedupadas pela investigação.
+
+    Levanta ValueError se as execuções misturarem versões do pipeline e não tiver sido escolhida uma.
+    """
+    rows, seen, warnings, no_model, invs = [], set(), [], 0, []
     for path in sorted(glob.glob(raw_glob)):
         with open(path, newline="", encoding="utf-8") as f:
             for r in csv.DictReader(f):
@@ -168,11 +174,15 @@ def load_darksherlock(raw_glob: str, inv_dir: Path, model: str, since: str, runs
                 except (OSError, json.JSONDecodeError):
                     no_model += 1
                     continue
-                if data.get("model") != model:
+                if data.get("model") != model or not versions.keep(data, pipeline_version):
                     continue
+                invs.append(data)
                 seen.add(inv)
                 r["_stamp"] = stamp
                 rows.append(r)
+    mixed = versions.mixed_error(invs, pipeline_version)
+    if mixed:
+        raise ValueError(mixed)
     if no_model:
         warnings.append(f"{no_model} linha(s) de raw_runs cuja investigação não foi encontrada em {inv_dir} (ignoradas).")
     by_sc: dict[str, list[dict]] = {}
@@ -295,13 +305,19 @@ def main() -> int:
     ap.add_argument("--model", required=True)
     ap.add_argument("--since", default="00000000", help="Só execuções com data de ficheiro >= AAAAMMDD.")
     ap.add_argument("--runs", type=int, default=3)
+    versions.add_argument(ap)
     ap.add_argument("--raw", default=str(BASE / "results" / "raw_runs_*.csv"))
     ap.add_argument("--investigations", default=str(BASE.parent / "investigations"))
     ap.add_argument("--timing-log", default=str(BASE / "baseline_manual" / "timing_log.csv"))
     ap.add_argument("--out", default=str(BASE / "results" / "eq01_tabela13.md"))
     args = ap.parse_args()
 
-    ds, w1 = load_darksherlock(args.raw, Path(args.investigations), args.model, args.since, args.runs)
+    try:
+        ds, w1 = load_darksherlock(args.raw, Path(args.investigations), args.model, args.since, args.runs,
+                                   args.pipeline_version)
+    except ValueError as e:
+        print(f"ERRO: {e}", file=sys.stderr)
+        return 2
     if not ds:
         print(f"ERRO: nenhuma execução de {args.model!r} desde {args.since} (raw: {args.raw}).")
         return 1

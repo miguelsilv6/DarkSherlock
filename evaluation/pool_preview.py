@@ -28,6 +28,8 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import versions
+
 SCENARIOS = [f"{d}{n}" for d in "ABCD" for n in "123"]
 
 
@@ -46,6 +48,7 @@ def main() -> int:
     ap.add_argument("--model", required=True)
     ap.add_argument("--since", default="00000000")
     ap.add_argument("--dir", default=str(Path(__file__).resolve().parent.parent / "investigations"))
+    versions.add_argument(ap)
     args = ap.parse_args()
 
     runs: dict[str, list[dict]] = collections.defaultdict(list)
@@ -57,8 +60,9 @@ def main() -> int:
             d = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if d.get("model") == args.model and d.get("search_results"):
+        if d.get("model") == args.model and d.get("search_results") and versions.keep(d, args.pipeline_version):
             runs[d["scenario_id"]].append(d)
+    versions.exit_if_mixed([d for rs in runs.values() for d in rs], args.pipeline_version)
     if not runs:
         print(f"Nenhuma execução de {args.model!r} com search_results desde {args.since}.")
         return 1

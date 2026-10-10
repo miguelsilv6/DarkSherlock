@@ -21,6 +21,7 @@ from config import OLLAMA_BASE_URL
 from sidebar import render_sidebar
 from audit import setup_file_logging
 from ui_theme import inject_theme
+import settings_state
 
 setup_file_logging()
 
@@ -48,20 +49,13 @@ import local_models
 
 model_options = get_model_choices()
 
-# Default: o modelo embutido por omissão (corre out-of-the-box), senão dolphin
-# se existir em Ollama, senão o primeiro da lista.
-def _default_model_index(options):
-    if not options:
-        return 0
-    for idx, name in enumerate(options):
-        if name == local_models.DEFAULT_BUILTIN_MODEL:
-            return idx
-    for idx, name in enumerate(options):
-        if "dolphin" in name.lower():
-            return idx
-    return 0
-
-default_model_index = _default_model_index(model_options)
+# Repõe nas chaves dos widgets os valores guardados (settings_state): o
+# Streamlit apaga a chave de um widget sempre que corre uma página que não o
+# desenha, e sem isto as escolhas feitas aqui perdiam-se ao voltar à Home.
+settings_state.restore("model_select", settings_state.default_model(model_options), valid=model_options or None)
+for _key in ("thread_slider", "max_results_slider", "max_scrape_slider", "custom_instructions"):
+    settings_state.restore(_key)
+settings_state.restore("preset_select", valid=list(settings_state.PRESET_OPTIONS))
 
 if not model_options:
     st.error(
@@ -73,11 +67,10 @@ else:
     st.selectbox(
         "Select LLM Model",
         model_options,
-        index=default_model_index,
         key="model_select",
         help="Modelo usado em todas as etapas: refinamento, filtragem e geração de relatório.",
     )
-    _selected = st.session_state.get("model_select", model_options[default_model_index])
+    _selected = st.session_state.get("model_select", model_options[0])
     if local_models.is_builtin(_selected):
         spec = local_models.BUILTIN_MODELS[_selected]
         if local_models.is_downloaded(_selected):
@@ -103,7 +96,6 @@ with col1:
         "Scraping Threads",
         min_value=1,
         max_value=16,
-        value=4,
         key="thread_slider",
         help="Threads paralelas para pesquisa e scraping. Mais threads = mais rápido, mas aumenta a carga no Tor.",
     )
@@ -113,7 +105,6 @@ with col2:
         "Max Results to Filter",
         min_value=10,
         max_value=100,
-        value=50,
         key="max_results_slider",
         help="Limite de resultados brutos enviados ao LLM na fase de filtragem.",
     )
@@ -123,7 +114,6 @@ with col3:
         "Max Pages to Scrape",
         min_value=3,
         max_value=20,
-        value=10,
         key="max_scrape_slider",
         help="Número máximo de páginas .onion a fazer scrape após a filtragem.",
     )
@@ -173,6 +163,10 @@ st.text_area(
     key="custom_instructions",
     help="Instruções adicionais anexadas ao system prompt. Permitem focar a análise em artefactos específicos.",
 )
+
+# Guarda as escolhas em chaves persistentes (ver settings_state.py), para que a
+# Home e a página Investigation as usem depois de sair desta página.
+settings_state.persist()
 
 # ---------------------------------------------------------------------------
 # Provider Configuration

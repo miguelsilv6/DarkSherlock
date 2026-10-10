@@ -30,9 +30,33 @@ VENV=".venv"
 # ---------------------------------------------------------------------------
 echo "==> A atualizar código (branch: ${BRANCH})"
 git fetch origin
+
+# config/search_engines.json é escrito pela app (ativar/desativar motores) e
+# esteve versionado até outubro de 2026. Uma cópia local alterada fazia falhar
+# o checkout/pull, e o commit que o deixa de versionar apagá-lo-ia. Guarda-se
+# a cópia local, descarta-se a alteração ao ficheiro versionado e repõe-se a
+# cópia no fim, para a configuração dos motores nunca se perder.
+ENGINES_CFG="config/search_engines.json"
+ENGINES_BAK="${ENGINES_CFG}.local-backup"
+restore_engines_cfg() {
+  if [ -f "${ENGINES_BAK}" ]; then
+    mv -f "${ENGINES_BAK}" "${ENGINES_CFG}"
+    echo "==> Configuração local dos motores mantida (${ENGINES_CFG})"
+  fi
+}
+trap restore_engines_cfg EXIT   # repõe a cópia mesmo que o pull falhe
+if [ -f "${ENGINES_CFG}" ]; then
+  cp -p "${ENGINES_CFG}" "${ENGINES_BAK}"
+  if git ls-files --error-unmatch "${ENGINES_CFG}" >/dev/null 2>&1; then
+    git checkout -- "${ENGINES_CFG}"
+  fi
+fi
+
 git checkout "${BRANCH}"
 # --ff-only evita merges acidentais; falha de forma clara se houver divergência
 git pull --ff-only origin "${BRANCH}"
+restore_engines_cfg
+trap - EXIT
 
 # ---------------------------------------------------------------------------
 # 2. Escolher interpretador Python 3.10+

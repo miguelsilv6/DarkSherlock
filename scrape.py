@@ -16,12 +16,14 @@ OSINT alimentada por IA para monitorização da dark web.
 
 import logging
 import random
+import re
 import requests
 import threading
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urljoin
 
 import warnings
 
@@ -33,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 # N.º de URLs que a salvaguarda ética impediu na última chamada a scrape_multiple (diagnóstico/avaliação).
 last_blocked_count = 0
+# Desfecho por URL da última chamada a scrape_multiple (sem o texto): status, http_code, ...
+last_details: dict[str, dict] = {}
 # Suprime avisos de SSL e outros avisos não críticos do urllib3/requests
 # que surgem frequentemente ao lidar com certificados em sites .onion ou
 # configurações de proxy não convencionais.
@@ -146,50 +150,82 @@ def _truncate_at_paragraph(text: str, max_chars: int) -> str:
     return truncated.rstrip() + "..."
 
 
-def scrape_single(url_data, session=None, rotate=False, rotate_interval=5, control_port=9051, control_password=None):
+# Limites e heurísticas da raspagem.
+MAX_BYTES = 2_000_000          # corpo máximo lido por página (o resto é ignorado)
+MAX_REDIRECTS = 5
+_ALLOWED_CONTENT_TYPES = ("text/html", "application/xhtml+xml", "text/plain")
+_REDIRECT_CODES = {301, 302, 303, 307, 308}
+# Páginas de desafio/erro: só se classificam assim quando são curtas (uma
+# página longa que mencione "captcha" de passagem continua a ser conteúdo).
+_CHALLENGE_OR_ERROR = re.compile(
+    r"captcha|are you (a )?human|verify (that )?you are|ddos[- ]protection|checking your browser"
+    r"|access denied|403 forbidden|404 not found|page not found|502 bad gateway|503 service"
+    r"|site (is )?(down|offline)|under maintenance|you are in (the )?queue|enable javascript",
+    re.IGNORECASE,
+)
+_CHALLENGE_MAX_CHARS = 2500
+_MIN_TEXT_CHARS = 150
+
+
+def _decode(raw: bytes, response) -> str:
+    """Descodifica o corpo: charset do cabeçalho, senão UTF-8 estrito, senão o detetado."""
+    ctype = (response.headers.get("Content-Type") or "").lower()
+    m = re.search(r"charset=([\w\-]+)", ctype)
+    if m:
+        try:
+            return raw.decode(m.group(1), errors="replace")
+        except LookupError:
+            pass
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        enc = getattr(response, "apparent_encoding", None) or "latin-1"
+        return raw.decode(enc, errors="replace")
+
+
+def _read_body(response) -> tuple[bytes, bool]:
+    """Lê no máximo MAX_BYTES do corpo. Devolve (bytes, truncado)."""
+    chunks, total = [], 0
+    for chunk in response.iter_content(chunk_size=65536):
+        if not chunk:
+            continue
+        chunks.append(chunk)
+        total += len(chunk)
+        if total >= MAX_BYTES:
+            return b"".join(chunks)[:MAX_BYTES], True
+    return b"".join(chunks), False
+
+
+def _html_to_text(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.extract()
+    return " ".join(soup.get_text(separator=" ").split())
+
+
+def fetch_page(url_data, session=None) -> dict:
     """
-    Raspa uma única URL e devolve o seu conteúdo textual limpo.
+    Pede uma página e devolve um registo com o desfecho, sem nunca usar o
+    título do resultado de pesquisa como conteúdo.
 
-    A função deteta automaticamente se a URL é um endereço .onion e, nesse
-    caso, encaminha o pedido pela rede Tor. Para URLs da clearweb, é usado
-    um pedido direto como alternativa (embora o foco principal da ferramenta
-    seja a dark web).
+    - Todo o tráfego passa pela sessão Tor (incluindo endereços fora de
+      .onion): nunca há pedidos diretos que exponham o IP do investigador.
+    - Os redirecionamentos são seguidos à mão (no máximo MAX_REDIRECTS) e cada
+      destino passa pela salvaguarda ética antes de ser pedido.
+    - Só conta como evidência ("status": "ok") uma resposta 200, de tipo
+      texto/HTML, com texto suficiente e que não seja uma página de desafio
+      (captcha) ou de erro.
 
-    O texto devolvido é pré-processado para remover ruído HTML (scripts,
-    estilos, espaços em branco excessivos), produzindo conteúdo adequado
-    para ingestão por um modelo de linguagem (LLM).
-
-    Em caso de falha (timeout, erro de rede, código HTTP não-200), a função
-    devolve apenas o título da página como conteúdo, garantindo que a
-    referência à URL não se perde no pipeline de análise.
-
-    Parâmetros:
-        url_data (dict): dicionário com pelo menos as chaves 'link' (str) e
-                         'title' (str), tipicamente proveniente dos resultados
-                         de um motor de busca .onion.
-        session (requests.Session | None): sessão Tor partilhada criada pelo
-                         chamador. Se None, cria uma nova sessão dedicada.
-                         Passar uma sessão partilhada elimina o overhead de
-                         estabelecimento de circuito Tor por cada URL.
-        rotate (bool): reservado para rotação de circuito Tor (não implementado
-                       nesta versão).
-        rotate_interval (int): intervalo de rotação em segundos (reservado).
-        control_port (int): porta do controlador Tor para rotação de circuito
-                            (reservado, padrão 9051).
-        control_password (str | None): palavra-passe do controlador Tor
-                                       (reservado).
-
-    Devolve:
-        tuple[str, str]: par (url, texto_raspado) onde url é o endereço
-                         original e texto_raspado é o conteúdo limpo ou,
-                         em caso de erro, apenas o título.
+    Devolve dict com: url, final_url, status, http_code, content_type, error,
+    bytes, truncated, text. Valores de status: ok, http_error, non_html,
+    challenge_or_error, too_short, blocked_redirect, too_many_redirects,
+    timeout, connection_error, error, adapter_failed.
     """
-    url = url_data['link']
+    url = url_data["link"]
+    rec = {"url": url, "final_url": url, "status": "error", "http_code": None, "content_type": "",
+           "error": None, "bytes": 0, "truncated": False, "text": ""}
 
-    # Dispatch para forum adapter, se algum reclamar este domínio.
-    # Fóruns autenticados (DarkForums, …) precisam de sessão com cookies e
-    # parsing específico — o scraper genérico não conseguiria autenticar nem
-    # extrair posts do layout MyBB correctamente.
+    # Fóruns autenticados (DarkForums, …): o adapter tem sessão própria via Tor.
     try:
         from forum_adapters import get_adapter_for_url
         adapter = get_adapter_for_url(url)
@@ -198,85 +234,79 @@ def scrape_single(url_data, session=None, rotate=False, rotate_interval=5, contr
     if adapter is not None and adapter.is_configured():
         text = adapter.fetch_thread(url)
         if text:
-            return url, f"{url_data['title']} - {text}"
-        # Adapter falhou — cair no fallback genérico (provavelmente também
-        # falhará por falta de auth, mas mantém-se o título no pipeline).
+            rec.update(status="ok", text=" ".join(text.split()), content_type="adapter")
+            return rec
+        rec["status"] = "adapter_failed"
 
-    # Deteta se o destino é um serviço oculto Tor pelo sufixo ".onion".
-    # Esta verificação determina se o pedido deve ser encaminhado pelo proxy
-    # Tor ou enviado diretamente para a clearweb.
-    use_tor = ".onion" in url
-
-    # Seleciona aleatoriamente um User-Agent da lista global para este pedido,
-    # simulando o comportamento de um browser real e dificultando a
-    # correlação de múltiplos pedidos provenientes da mesma ferramenta.
-    headers = {
-        "User-Agent": random.choice(USER_AGENTS)
-    }
-
+    headers = {"User-Agent": random.choice(USER_AGENTS)}
+    tor_session = session if session is not None else get_tor_session()
+    current = url
     try:
-        if use_tor:
-            # Reutiliza a sessão Tor partilhada passada pelo chamador, ou
-            # cria uma nova se nenhuma foi fornecida. A reutilização elimina
-            # o overhead de ~300-500 ms de estabelecimento de circuito Tor
-            # que ocorreria se cada worker criasse a sua própria sessão.
-            tor_session = session if session is not None else get_tor_session()
-            # Timeout (connect, read): connect curto (15s) para descartar
-            # rapidamente serviços ocultos offline (muito frequentes), read
-            # generoso (45s) para a latência do onion routing em hosts vivos.
-            # Antes era um único 45s — esperava 45s só para falhar num host morto.
-            response = tor_session.get(url, headers=headers, timeout=(15, 45))
+        for _hop in range(MAX_REDIRECTS + 1):
+            # connect curto (15 s) para descartar rapidamente serviços offline;
+            # read generoso (45 s) para a latência do onion routing.
+            response = tor_session.get(current, headers=headers, timeout=(15, 45),
+                                       allow_redirects=False, stream=True)
+            rec["http_code"] = response.status_code
+            if response.status_code in _REDIRECT_CODES and response.headers.get("Location"):
+                nxt = urljoin(current, response.headers["Location"])
+                response.close()
+                pattern = safety.blocked_pattern({"title": "", "link": nxt})
+                if pattern:
+                    safety.log_referral(nxt, url_data.get("found_by"), pattern, source="redirect")
+                    logger.warning("Salvaguarda ética: redirecionamento não seguido (padrão: %s).", pattern)
+                    rec.update(status="blocked_redirect", final_url=nxt)
+                    return rec
+                current = nxt
+                continue
+            break
         else:
-            # Alternativa para URLs da clearweb, caso a ferramenta seja
-            # utilizada fora do contexto dark web. connect 10s / read 30s.
-            response = requests.get(url, headers=headers, timeout=(10, 30))
+            rec.update(status="too_many_redirects", final_url=current)
+            return rec
 
-        if response.status_code == 200:
-            # Analisa o HTML da resposta com BeautifulSoup usando o parser
-            # "html.parser" nativo do Python (sem dependências externas).
-            soup = BeautifulSoup(response.text, "html.parser")
-
-            # Remove blocos <script> e <style> do DOM antes de extrair texto.
-            # Estes elementos contêm código JavaScript e regras CSS que,
-            # se incluídos, poluiriam o texto com conteúdo não semântico,
-            # reduzindo a qualidade da análise subsequente pelo LLM.
-            for script in soup(["script", "style"]):
-                script.extract()
-
-            # Extrai o texto puro do DOM restante, usando espaço como
-            # separador entre elementos para preservar legibilidade.
-            text = soup.get_text(separator=' ')
-
-            # Normaliza espaços em branco: colapsa múltiplos espaços,
-            # tabulações e quebras de linha num único espaço, produzindo
-            # uma string compacta e uniforme.
-            text = ' '.join(text.split())
-
-            # Combina o título (para contexto de identificação) com o corpo
-            # textual da página numa única string para o pipeline de análise.
-            scraped_text = f"{url_data['title']} - {text}"
+        rec["final_url"] = current
+        ctype = (response.headers.get("Content-Type") or "text/html").split(";")[0].strip().lower()
+        rec["content_type"] = ctype
+        if response.status_code != 200:
+            rec["status"] = "http_error"
+            response.close()
+            return rec
+        if not ctype.startswith(_ALLOWED_CONTENT_TYPES):
+            rec["status"] = "non_html"
+            response.close()
+            return rec
+        raw, truncated = _read_body(response)
+        response.close()
+        rec["bytes"], rec["truncated"] = len(raw), truncated
+        body = _decode(raw, response)
+        text = _html_to_text(body) if ctype != "text/plain" else " ".join(body.split())
+        if len(text) < _MIN_TEXT_CHARS:
+            rec.update(status="too_short", text=text)
+        elif len(text) <= _CHALLENGE_MAX_CHARS and _CHALLENGE_OR_ERROR.search(text):
+            rec.update(status="challenge_or_error", text=text)
         else:
-            # Se o servidor devolver um código de erro HTTP (ex.: 403, 404),
-            # usa apenas o título como conteúdo, mantendo a referência à URL
-            # sem perder o resultado no pipeline.
-            scraped_text = url_data['title']
+            rec.update(status="ok", text=text)
+        return rec
     except requests.Timeout:
-        # Timeout específico: regista o URL para diagnóstico, mas continua
         logger.debug("Timeout ao aceder a %s", url)
-        scraped_text = url_data['title']
+        rec["status"] = "timeout"
     except requests.ConnectionError as e:
-        # Erro de ligação: circuito Tor falhado, serviço .onion offline, etc.
         logger.debug("Erro de ligação a %s: %s", url, e)
-        scraped_text = url_data['title']
-    except Exception as e:
-        # Captura qualquer outra excepção (erro de parsing, SSL, etc.)
-        # e devolve o título como fallback. Esta abordagem defensiva
-        # garante que uma falha numa URL individual não interrompe o
-        # processamento das restantes URLs no pipeline.
+        rec.update(status="connection_error", error=str(e)[:200])
+    except Exception as e:  # noqa: BLE001 — uma URL falhada não pode parar o lote
         logger.debug("Erro inesperado ao aceder a %s: %s", url, e)
-        scraped_text = url_data['title']
+        rec.update(status="error", error=str(e)[:200])
+    return rec
 
-    return url, scraped_text
+
+def scrape_single(url_data, session=None, rotate=False, rotate_interval=5, control_port=9051, control_password=None):
+    """
+    Compatibilidade: devolve (url, texto) — texto vazio se a página não for
+    evidência válida (ver fetch_page). O título do resultado de pesquisa já
+    não é usado como conteúdo nem anteposto ao texto.
+    """
+    rec = fetch_page(url_data, session)
+    return rec["url"], rec["text"] if rec["status"] == "ok" else ""
 
 def scrape_multiple(urls_data, max_workers=5):
     """
@@ -312,16 +342,22 @@ def scrape_multiple(urls_data, max_workers=5):
                         textual raspado (ou título em caso de falha).
     """
     results = {}
-    max_chars = 2000  # Limite máximo de caracteres por URL para proteger a janela de contexto do LLM
+    # Texto guardado por página. Era 2000 caracteres, o que fazia a Etapa 5
+    # procurar os termos só no início da página (menus, cabeçalhos). O limite
+    # ao que o LLM lê é aplicado depois, na Etapa 6 (generate_summary).
+    max_chars = 20000
 
     # Salvaguarda ética (ver safety.py): URLs cujo título/URL indique conteúdo
     # de abuso sexual de menores nunca são pedidos. Só se regista o n.º de
     # bloqueios e o padrão que casou, nunca o título.
-    global last_blocked_count
+    global last_blocked_count, last_details
+    details: dict[str, dict] = {}
     urls_data, blocked = safety.split_blocked(list(urls_data))
     last_blocked_count = len(blocked)
-    for _item, pattern in blocked:
+    for item, pattern in blocked:
         logger.warning("Salvaguarda ética: um URL não foi pedido (padrão: %s).", pattern)
+        safety.log_referral(item.get("link", ""), item.get("found_by"), pattern, source="scrape")
+        details[item.get("link", "")] = {"url": item.get("link", ""), "status": "blocked_safety"}
 
     # Cria UMA sessão Tor partilhada por todos os workers do pool.
     # Sem esta optimização, cada worker chamaria get_tor_session() internamente,
@@ -338,7 +374,7 @@ def scrape_multiple(urls_data, max_workers=5):
         # (url_data) a partir do future correspondente, se necessário para
         # diagnóstico ou logging futuro.
         future_to_url = {
-            executor.submit(scrape_single, url_data, shared_session): url_data
+            executor.submit(fetch_page, url_data, shared_session): url_data
             for url_data in urls_data
         }
 
@@ -346,20 +382,16 @@ def scrape_multiple(urls_data, max_workers=5):
         # conclusão, não de submissão), permitindo processar resultados
         # imediatamente sem esperar que todas as tarefas terminem.
         for future in as_completed(future_to_url):
+            url_data = future_to_url[future]
             try:
-                url, content = future.result()
-
-                # Trunca o conteúdo ao último parágrafo ou frase completa
-                # antes do limite, em vez de cortar a meio de uma frase.
-                # A truncagem inteligente preserva a coerência do texto
-                # para o LLM, melhorando a qualidade da análise.
-                content = _truncate_at_paragraph(content, max_chars)
-
-                results[url] = content
-            except Exception:
-                # Ignora silenciosamente falhas individuais para garantir
-                # resiliência: uma URL inacessível não deve bloquear os
-                # resultados das restantes URLs do lote.
+                rec = future.result()
+            except Exception as e:  # noqa: BLE001
+                rec = {"url": url_data["link"], "status": "error", "error": str(e)[:200], "text": ""}
+            details[rec["url"]] = {k: v for k, v in rec.items() if k != "text"}
+            if rec.get("status") != "ok":
                 continue
+            # Trunca ao último parágrafo/frase completa antes do limite.
+            results[rec["url"]] = _truncate_at_paragraph(rec["text"], max_chars)
 
+    last_details = details
     return results

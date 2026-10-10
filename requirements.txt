@@ -1,12 +1,21 @@
-bs4
-pysocks
-requests
+# Versões mínimas exigidas pelo código (funcionalidades usadas). Para uma
+# instalação reprodutível (p. ex. a da avaliação do Capítulo 6), grava as
+# versões exatas de uma instalação verificada:
+#   pip freeze > requirements.lock.txt      e depois   pip install -r requirements.lock.txt
+
+# Rede via Tor (SOCKS5h)
+pysocks>=1.7.1
+requests>=2.31
 curl_cffi>=0.7.0
-streamlit
-python-dotenv
-langchain-ollama
+# Extração de HTML (o pacote "bs4" do PyPI é só um alias de beautifulsoup4)
+beautifulsoup4>=4.12
+# Interface: st.pills exige Streamlit >= 1.40
+streamlit>=1.40
+python-dotenv>=1.0
+# LLM via Ollama (num_ctx, num_predict, seed) e LangChain
+langchain-ollama>=0.2
+langchain_community>=0.3
 backports.tarfile
-langchain_community
 # Geração de relatórios PDF forenses (report.py: `from fpdf import FPDF`).
 # Sem isto a app NÃO arranca — Home.py importa report no topo.
 fpdf2>=2.7.0

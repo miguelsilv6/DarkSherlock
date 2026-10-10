@@ -1,0 +1,6 @@
+#!/bin/sh
+# Recusa commits com dados reais da avaliação (termos de evaluation/scenarios.local.json)
+# ou com caminhos que nunca podem ser versionados (investigations/, referrals/, ...).
+# Ativar uma vez por clone:   git config core.hooksPath .githooks
+PY=$(command -v python3 || command -v python)
+exec "$PY" "$(git rev-parse --show-toplevel)/evaluation/redact.py" --check-staged

@@ -1,0 +1,21 @@
+{
+  "description": "Formato de evaluation/scenarios.local.json (fora do Git). Copia este ficheiro para scenarios.local.json e substitui os valores fictícios por casos públicos reais. Só casos já noticiados ou anunciados publicamente (grupos, vítimas em leak sites, fugas públicas) e, no domínio Identidade, dados do próprio investigador. 'label' é o pseudónimo que aparece no relatório; 'redact' lista os termos a rasurar (se faltar, rasuram-se os termos-chave da query); 'fonte_publica' fica só neste ficheiro.",
+  "scenarios": [
+    {"id": "A1", "domain": "Threat Intel", "preset": "threat_intel",
+     "query": "grupoexemplo leak site", "label": "Grupo-R1",
+     "redact": ["grupoexemplo"], "fonte_publica": "https://exemplo.invalid/noticia-1"},
+    {"id": "B1", "domain": "Ransomware/Malware", "preset": "ransomware_malware",
+     "query": "grupoexemplo ransomware empresa-exemplo", "label": "Vítima-V1",
+     "redact": [{"term": "empresa-exemplo", "label": "Vítima-V1"}, {"term": "grupoexemplo", "label": "Grupo-R1"}],
+     "fonte_publica": "https://exemplo.invalid/noticia-2"},
+    {"id": "C1", "domain": "Identidade Pessoal", "preset": "personal_identity",
+     "query": "investigador.exemplo@example.invalid", "label": "Investigador-I1",
+     "fonte_publica": "dados do próprio investigador"},
+    {"id": "C3", "domain": "Identidade Pessoal", "preset": "personal_identity",
+     "query": "NIF 123456789", "label": "Investigador-I1-NIF",
+     "fonte_publica": "dados do próprio investigador"},
+    {"id": "D1", "domain": "Espionagem Corporativa", "preset": "corporate_espionage",
+     "query": "empresa-exemplo.invalid source code leak", "label": "Empresa-E1",
+     "fonte_publica": "https://exemplo.invalid/noticia-3"}
+  ]
+}

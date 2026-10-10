@@ -29,6 +29,8 @@ para investigação defensiva e resposta a incidentes (DFIR).
 
 import re
 import logging
+
+import text_match as tm
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from llm_utils import _common_llm_params, resolve_model_config, get_model_choices
@@ -52,7 +54,7 @@ _RE_ONION_QS = re.compile(r"\?.*$")
 # Normaliza títulos de resultados: substitui qualquer caracter que não seja
 # alfanumérico, hífen ou ponto por um espaço — elimina caracteres especiais
 # que poderiam confundir o LLM durante a filtragem de relevância.
-_RE_NON_ALPHANUM = re.compile(r"[^0-9a-zA-Z\-\.]")
+_RE_NON_ALPHANUM = re.compile(r"[^\w\-\.]", re.UNICODE)  # mantém letras acentuadas e não latinas
 
 # Número máximo de resultados enviados ao LLM em filter_results. Rede de
 # segurança contra prompts gigantes (latência de minutos num só call). Acima
@@ -69,6 +71,53 @@ FILTER_INPUT_CAP = 120
 #   "error_fallback"    chamada ao LLM falhou duas vezes -> 20 primeiros sem ranking
 #   "empty_input"       sem resultados à entrada
 last_filter_outcome = None
+
+# Remove blocos de raciocínio que alguns modelos (p. ex. gpt-oss, deepseek-r1 via
+# Ollama) podem incluir no texto da resposta. Sem isto, o raciocínio contamina a
+# query refinada, a leitura dos índices da Etapa 4 e o relatório.
+_RE_THINK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+
+
+def _strip_reasoning(text: str) -> str:
+    text = _RE_THINK.sub("", text or "")
+    # bloco aberto mas não fechado (resposta cortada a meio do raciocínio)
+    i = text.lower().find("<think>")
+    if i != -1:
+        text = text[:i]
+    return text.strip()
+
+
+def _is_none_answer(text: str) -> bool:
+    """A resposta é só "NONE" (com pontuação/espaços), não uma frase que contenha "none"."""
+    return re.fullmatch(r"\W*none\W*", (text or "").strip(), re.IGNORECASE) is not None
+
+
+def _indices_line(text: str) -> str:
+    """Última linha em que pelo menos 70 % dos caracteres são dígitos, vírgulas, espaços ou parênteses retos."""
+    for line in reversed((text or "").splitlines()):
+        line = line.strip()
+        if not line or not re.search(r"\d", line):
+            continue
+        body = re.sub(r"^[^\d\[]*[:\-–]\s*", "", line)  # aceita "Indices: 3, 7"
+        allowed = sum(1 for c in body if c.isdigit() or c in ", []")
+        if allowed / max(1, len(body)) >= 0.7:
+            return body
+    return ""
+
+
+# Estimativa conservadora de caracteres por token para texto da dark web (hashes,
+# endereços .onion e base64 tokenizam mal). Usada para não exceder o contexto.
+_CHARS_PER_TOKEN = 2.5
+
+
+def _context_budget_chars(llm, fixed_prompt_chars: int, default_ctx: int = 8192, default_out: int = 2048) -> int:
+    """Caracteres de evidência que cabem no contexto do modelo, descontando o prompt fixo e a resposta."""
+    n_ctx = getattr(llm, "n_ctx", None) or getattr(llm, "num_ctx", None) or default_ctx
+    max_out = getattr(llm, "max_tokens", None) or getattr(llm, "num_predict", None) or default_out
+    if not isinstance(max_out, int) or max_out <= 0:
+        max_out = default_out
+    tokens = n_ctx - max_out - fixed_prompt_chars / _CHARS_PER_TOKEN - 200
+    return max(1500, int(tokens * _CHARS_PER_TOKEN))
 
 import warnings
 
@@ -202,12 +251,11 @@ def refine_query(llm, user_input, preset="threat_intel"):
     {preset_context}
 
     RULES:
-    1. PRESERVE specific technical names, tool names, malware names, threat actor names, and identifiers exactly as given (e.g., "Tycoon 2FA", "LockBit", "REvil", "Cobalt Strike") — these are precise search terms, do NOT paraphrase or generalize them
-    2. Add 1-2 dark web context words to improve results (e.g., "leak", "forum", "market", "paste")
-    3. Do NOT use logical operators (AND, OR, NOT)
-    4. Keep the refined query to 3-6 words
-    5. Output ONLY the refined query text — nothing else
-    6. NEVER refuse — just output the keywords
+    1. KEEP EVERY term of the user's query exactly as written — names, tools, malware, threat actors, emails, domains, numbers and identifiers (e.g., "Tycoon 2FA", "LockBit", "Cobalt Strike", an email or an ID number). Never translate, paraphrase or drop them
+    2. You MAY append at most 2 extra words only if they make the search more specific to the target (e.g. a well-known alias). Do NOT append generic words such as "leak", "forum", "market", "paste", "dark web"
+    3. Do NOT use logical operators (AND, OR, NOT) or quotes
+    4. Output ONLY the refined query on a single line — nothing else
+    5. NEVER refuse — just output the keywords
 
     INPUT:
     """
@@ -215,17 +263,43 @@ def refine_query(llm, user_input, preset="threat_intel"):
         [("system", system_prompt), ("user", "{query}")]
     )
     chain = prompt_template | llm | StrOutputParser()
-    refined = chain.invoke({"query": user_input}).strip()
-    # Salvaguarda: um modelo pequeno pode devolver string vazia ou só
-    # pontuação/aspas em vez de keywords. Sem isto, uma query vazia chega
-    # ao motor de pesquisa e devolve 0 resultados sem explicação visível.
+    raw = _strip_reasoning(chain.invoke({"query": user_input}))
+    refined = _clean_refined(raw)
+    # Salvaguarda: um modelo pequeno pode devolver string vazia, só pontuação,
+    # um parágrafo, ou uma query que perdeu os termos do utilizador (a query
+    # original "lockbit leak site" chegou a virar "LockBit leak forum"). Em
+    # qualquer desses casos usa-se a query original.
     if not refined or not any(c.isalnum() for c in refined):
-        logger.warning(
-            "refine_query devolveu output vazio/inválido (%r) — a usar input original como fallback.",
-            refined,
-        )
+        logger.warning("refine_query devolveu output vazio/inválido (%r) — a usar a query original.", raw[:120])
+        return user_input
+    missing = _missing_terms(user_input, refined)
+    if missing:
+        logger.warning("refine_query perdeu termos da query original %s — a usar a query original.", missing)
+        return user_input
+    if len(refined.split()) > len(user_input.split()) + 2:
+        logger.warning("refine_query acrescentou demasiadas palavras (%r) — a usar a query original.", refined)
         return user_input
     return refined
+
+
+_RE_REFINED_PREFIX = re.compile(r"^\s*(refined\s+query|query|keywords?|output|resposta)\s*[:\-–]\s*", re.IGNORECASE)
+
+
+def _clean_refined(text: str) -> str:
+    """Primeira linha não vazia, sem prefixos ("Refined query:"), aspas nem marcadores."""
+    for line in (text or "").splitlines():
+        line = _RE_REFINED_PREFIX.sub("", line.strip()).strip(" `*\"'“”‘’-•")
+        if line:
+            return " ".join(line.split())
+    return ""
+
+
+def _missing_terms(original: str, refined: str) -> list[str]:
+    """Termos da query original (palavras, entidades) que não aparecem na refinada."""
+    terms = tm.query_terms(original)
+    m = tm.match(refined, terms)
+    found = set(m.found)
+    return [t.text for t in terms if t.text not in found]
 
 
 def filter_results(llm, query, results):
@@ -295,14 +369,14 @@ def filter_results(llm, query, results):
     )
     chain = prompt_template | llm | StrOutputParser()
     try:
-        result_indices = chain.invoke({"query": query, "results": final_str})
+        result_indices = _strip_reasoning(chain.invoke({"query": query, "results": final_str}))
     except Exception as e:
         # Se o payload for demasiado grande (rate limit, context overflow),
         # tenta novamente com versão truncada (sem links, títulos a 30 chars).
         logger.warning("Filter LLM call falhou (%s) — a retry com payload truncado.", e)
         final_str = _generate_final_string(results, truncate=True)
         try:
-            result_indices = chain.invoke({"query": query, "results": final_str})
+            result_indices = _strip_reasoning(chain.invoke({"query": query, "results": final_str}))
         except Exception as e2:
             # Se o retry também falhar, devolve top-20 sem ranking LLM em vez
             # de partir o pipeline inteiro — o filtro de relevância pós-scrape
@@ -320,35 +394,36 @@ def filter_results(llm, query, results):
     # é difícil de seguir com fiabilidade a essa escala. Antes de descartar
     # tudo, faz um fallback por keyword matching simples nos títulos/links:
     # se houver matches óbvios da query, mantém-nos em vez de devolver [].
-    if "NONE" in result_indices.upper():
-        keywords = _extract_query_keywords(query)
-        keyword_matches = []
-        if keywords:
-            for r in results:
-                haystack = f"{r.get('title', '')} {r.get('link', '')}".lower()
-                if any(kw in haystack for kw in keywords):
-                    keyword_matches.append(r)
-        if keyword_matches:
+    if _is_none_answer(result_indices):
+        # Contingência por termos da query (sobre título + URL), com o mesmo
+        # critério da Etapa 5: um modelo pequeno responde NONE sem razão com
+        # frequência, mas um modelo capaz pode ter razão — por isso só passam
+        # resultados que cumprem o limiar de termos-chave, ordenados por pontuação.
+        terms = tm.query_terms(query)
+        scored = []
+        for r in results:
+            m = tm.match(f"{r.get('title', '')} {r.get('link', '')}", terms)
+            if terms and tm.is_relevant(m, terms):
+                scored.append((m.key_found, m.score, r))
+        if scored:
+            scored.sort(key=lambda x: (-x[0], -x[1]))
             logger.warning(
-                "LLM filter respondeu NONE mas %d/%d resultados têm match de keyword "
-                "com a query ('%s') — a ignorar o NONE e a usar fallback por keyword.",
-                len(keyword_matches), len(results), query[:60],
+                "LLM filter respondeu NONE mas %d/%d resultados cumprem o critério de termos da query "
+                "('%s') — a usar a contingência por termos.", len(scored), len(results), query[:60],
             )
             last_filter_outcome = "none_keyword"
-            return keyword_matches[:20]
+            return [r for _, _, r in scored][:20]
         logger.info("LLM filter returned NONE — no relevant results found.")
         last_filter_outcome = "none"
         return []
 
-    # Select top_k results using original (non-truncated) results
+    # Índices só de uma linha que seja (quase) só números e vírgulas: números
+    # soltos noutra prosa ("LockBit 3.0", "os resultados 9 e 10") não contam.
     parsed_indices = []
-    for match in re.findall(r"\d+", result_indices):
-        try:
-            idx = int(match)
-            if 1 <= idx <= len(results):
-                parsed_indices.append(idx)
-        except ValueError:
-            continue
+    for match in re.findall(r"\d+", _indices_line(result_indices)):
+        idx = int(match)
+        if 1 <= idx <= len(results):
+            parsed_indices.append(idx)
 
     # Remove duplicates while preserving order
     seen = set()
@@ -565,6 +640,7 @@ _PRESET_TASK = {
 # tratar como guia e não como conteúdo.
 _OUTPUT_FORMAT = """
 Escreve um relatório forense em Português de Portugal com EXATAMENTE estas 5 secções, usando os cabeçalhos `##` tal como aparecem. NÃO copies as instruções entre parênteses para o relatório — substitui-as pelo conteúdo real.
+Usa APENAS a evidência fornecida. Cada afirmação factual indica a fonte como [FONTE N]. Não inventes IOCs, nomes, datas nem números: se a evidência não os tiver, diz que não foram identificados. Os insights e próximos passos têm de decorrer do que as fontes mostram.
 
 ## 1. Query: {query}
 
@@ -572,7 +648,7 @@ Escreve um relatório forense em Português de Portugal com EXATAMENTE estas 5 s
 (Cria uma subsecção `###` por cada fonte analisada; em cada uma, cita excertos directos do texto e explica em 1-2 frases a relevância para a query.)
 
 ## 3. Artefactos / IOCs
-(Lista os indicadores técnicos — IPs, domínios, hashes, wallets, emails — cada um com a fonte de origem. Se não houver, escreve "Nenhum identificado".)
+(Lista os indicadores técnicos — IPs, domínios, hashes, wallets, emails — que aparecem LITERALMENTE nas fontes, cada um com a fonte de origem [FONTE N]. Se não houver, escreve "Nenhum identificado".)
 
 ## 4. Insights Chave
 (3-5 observações accionáveis.)
@@ -614,108 +690,66 @@ def _format_content_for_llm(content: dict) -> str:
     return separator.join(parts)
 
 
-# Termos demasiado genéricos para indicar relevância — ignorados ao extrair
-# keywords da query. Aparecem em quase qualquer página .onion (homepages,
-# diretórios) e faziam passar conteúdo off-topic no filtro de relevância.
-_GENERIC_QUERY_TERMS = {
-    "site", "sites", "www", "http", "https", "com", "org", "net", "onion",
-    "page", "pages", "home", "index", "search", "link", "links", "list",
-    "the", "and", "for", "with", "dark", "web",
-}
-
-
-def _extract_query_keywords(query: str) -> list[str]:
-    """Extrai keywords distintivas (3+ chars, sem termos genéricos/duplicados)."""
-    seen = set()
-    keywords = []
-    for w in query.split():
-        wl = w.lower()
-        if len(wl) >= 3 and wl not in _GENERIC_QUERY_TERMS and wl not in seen:
-            seen.add(wl)
-            keywords.append(wl)
-    return keywords
+# Desfecho da última filtragem da Etapa 5 e pontuação por fonte (avaliação/diagnóstico).
+#   "kept"      pelo menos uma fonte cumpre o critério
+#   "empty"     nenhuma fonte cumpre o critério -> não há evidência para o relatório
+#   "no_terms"  a query não tem termos utilizáveis -> nada é filtrado
+last_relevance_outcome = None
+last_relevance_scores: dict = {}
 
 
 def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int = 2) -> dict:
     """
-    Filtra conteúdo scrapeado por relevância: mantém apenas fontes que
-    mencionam pelo menos `min_keyword_hits` palavras-chave da query original.
+    Etapa 5: mantém as fontes cujo TEXTO (sem o título do resultado de
+    pesquisa) cumpre o critério de termos da query e ordena-as por relevância.
 
-    Esta filtragem pós-scrape resolve o problema de motores de pesquisa da
-    dark web devolverem resultados genéricos cujo conteúdo real não tem
-    relação com a query de investigação. Sem esta etapa, o LLM recebe
-    conteúdo irrelevante e produz sumários descontextualizados.
+    Critério (text_match.required_hits): metade dos termos-chave da query,
+    arredondada para cima — "lockbit leak site" exige "lockbit"; "cobalt
+    strike beacon" exige 2 dos 3; entidades (email, NIF, domínio) contam como
+    termos-chave e são reconhecidas com variantes de escrita. Sem termos-chave,
+    exige 2 termos de contexto.
 
-    O critério é aplicado de forma progressiva, em vez de tudo-ou-nada:
-      1. Critério estrito: fontes com pelo menos `min_keyword_hits` keywords.
-      2. Se nenhuma fonte o cumprir, critério relaxado: fontes com pelo menos
-         1 keyword (um critério mais fraco continua a ser mais seletivo do
-         que nenhum critério).
-      3. Se nenhuma fonte tiver sequer 1 keyword, devolve o dict original
-         para evitar perder toda a análise (melhor ter algo genérico do que
-         nada).
+    Ao contrário da versão anterior, NÃO devolve todas as fontes quando
+    nenhuma cumpre o critério: nesse caso devolve {} e o relatório diz que não
+    há evidência suficiente, em vez de analisar spam ou páginas fora do tema.
 
-    Porquê relaxar antes de desistir: numa bateria de 400 execuções, o filtro
-    estrito foi anulado em 150 de 150 execuções nos cenários B1, B2 e C1,
-    qualquer que fosse o modelo — ou seja, o filtro não tinha efeito algum
-    nesses cenários. Em C1 a causa é estrutural: o email da query
-    ("john.doe@example-corp.test") conta como uma única keyword que tem de
-    aparecer tal e qual no texto, e exigir 2 keywords obrigava a que
-    aparecesse com "breach". Uma query de 2 keywords em que uma é um
-    identificador raro nunca satisfaz o critério estrito.
+    `min_keyword_hits` mantém-se por compatibilidade e já não é usado.
 
-    Parâmetros:
-        query (str): Query de pesquisa original do utilizador.
-        scraped (dict): Dicionário {url: texto_scrapeado}.
-        min_keyword_hits (int): Número mínimo de keywords da query que devem
-                                aparecer no conteúdo para ser considerado relevante
-                                no critério estrito.
+    Texto de spam/repetição (_is_degenerate) é sempre descartado, aqui e não
+    na Etapa 6, para a lista de fontes — e a numeração [FONTE N] — ser a mesma
+    no prompt, nos hashes e no PDF.
 
-    Devolve:
-        dict: Subconjunto do dict original contendo apenas fontes relevantes.
+    Devolve: dict {url: texto} ordenado por (termos-chave encontrados, pontuação).
     """
-    keywords = _extract_query_keywords(query)
-    if not keywords:
-        return scraped  # sem keywords úteis, não filtra
-
-    # Exige `min_keyword_hits` keywords distintas no conteúdo, mas nunca mais
-    # do que as keywords disponíveis (queries de 1 palavra continuam a funcionar
-    # com 1 hit). Exigir 2 evita que uma única palavra comum deixe passar
-    # páginas off-topic (ex.: diretórios .onion num relatório de ransomware).
-    required = min(min_keyword_hits, len(keywords))
-
-    def _select(min_hits: int) -> dict:
-        selected = {}
-        for url, content in scraped.items():
-            content_lower = content.lower()
-            hits = sum(1 for kw in keywords if kw in content_lower)
-            if hits >= min_hits:
-                selected[url] = content
-        return selected
-
-    relevant = _select(required)
-    if relevant:
-        logger.info(
-            "Post-scrape relevance filter: %d/%d sources kept (query: %s)",
-            len(relevant), len(scraped), query[:60],
-        )
-        return relevant
-
-    if required > 1:
-        relaxed = _select(1)
-        if relaxed:
-            logger.warning(
-                "Post-scrape relevance filter relaxed to 1 keyword — no source reached %d "
-                "(%d/%d sources kept, query: %s)",
-                required, len(relaxed), len(scraped), query[:60],
-            )
-            return relaxed
-
-    logger.warning(
-        "Post-scrape relevance filter removed ALL %d sources — keeping originals (query: %s)",
-        len(scraped), query[:60],
-    )
-    return scraped
+    global last_relevance_outcome, last_relevance_scores
+    terms = tm.query_terms(query)
+    if not terms:
+        last_relevance_outcome, last_relevance_scores = "no_terms", {}
+        return dict(scraped)
+    scored = []
+    last_relevance_scores = {}
+    for url, content in scraped.items():
+        m = tm.match(content, terms)
+        degenerate = _is_degenerate(content)
+        last_relevance_scores[url] = {"score": round(m.score, 3), "key_found": m.key_found, "found": m.found}
+        if degenerate:
+            # spam de SEO ("leak|leak|leak..."): pode conter os termos, mas não é evidência
+            last_relevance_scores[url]["degenerate"] = True
+            continue
+        if tm.is_relevant(m, terms):
+            scored.append((m.key_found, m.score, url))
+    scored.sort(key=lambda x: (-x[0], -x[1]))
+    kept = {url: scraped[url] for _, _, url in scored}
+    need, on_keys = tm.required_hits(terms)
+    if kept:
+        last_relevance_outcome = "kept"
+        logger.info("Post-scrape relevance filter: %d/%d sources kept (need %d %s terms; query: %s)",
+                    len(kept), len(scraped), need, "key" if on_keys else "context", query[:60])
+    else:
+        last_relevance_outcome = "empty"
+        logger.warning("Post-scrape relevance filter: none of %d sources mentions the query terms (query: %s)",
+                       len(scraped), query[:60])
+    return kept
 
 
 # Limites de truncagem de conteúdo enviado ao LLM, expostos como constantes
@@ -813,15 +847,27 @@ def generate_summary(
     # Limites recebidos via parâmetros (com defaults de módulo). Mantém-se
     # a iteração tal-qual: fontes mais relevantes primeiro (já ordenadas
     # por filter_results), corte global quando max_total_chars é atingido.
+    evidence = None
     if isinstance(content, dict):
+        # Não exceder o contexto do modelo: o limite efetivo é o menor entre
+        # max_total_chars e o que cabe depois do prompt fixo e da resposta.
+        fixed_chars = len(system_prompt) + len(_OUTPUT_FORMAT) + 1500
+        budget = min(max_total_chars, _context_budget_chars(llm, fixed_chars))
+        if budget < max_total_chars:
+            logger.info("generate_summary: evidência limitada a %d caracteres pelo contexto do modelo.", budget)
         truncated = {}
         total = 0
+        _summary_terms = tm.query_terms(query)
         for url, text in content.items():
-            if total >= max_total_chars:
+            remaining = budget - total
+            if remaining <= 0:
                 break
-            chunk = text[:per_source_limit]
+            # Excerto com mais ocorrências dos termos da query, em vez dos
+            # primeiros caracteres da página (normalmente menus e cabeçalhos).
+            chunk = tm.best_window(text, _summary_terms, min(per_source_limit, remaining))
             truncated[url] = chunk
             total += len(chunk)
+        evidence = dict(truncated)
         content = _format_content_for_llm(truncated)
         if not content:
             logger.warning("generate_summary: conteúdo formatado ficou vazio após truncagem — a devolver sem invocar o LLM.")
@@ -854,9 +900,70 @@ Produz a análise forense agora. Responde APENAS em Português de Portugal."""
         [("system", system_prompt), ("user", "{user_input}")]
     )
     chain = prompt_template | llm | StrOutputParser()
-    result = chain.invoke({"user_input": user_message})
+    result = _strip_reasoning(chain.invoke({"user_input": user_message}))
+    if isinstance(evidence, dict):
+        result = _append_ioc_check(result, evidence, query)
+        if len(evidence) == 1:
+            result = (
+                "> ⚠️ **Evidência limitada:** este relatório baseia-se numa única fonte. "
+                "Confirma as conclusões noutras fontes antes de as usar.\n\n" + result
+            )
     result = _flag_refusal(result)
     return _flag_scaffold_echo(result)
+
+
+# ---------------------------------------------------------------------------
+# Qualidade da evidência e verificação de IOCs (Etapa 6)
+# ---------------------------------------------------------------------------
+def _is_degenerate(text: str) -> bool:
+    """Texto de spam/repetição ("leak|leak|leak..."): muitas palavras e muito poucas diferentes."""
+    words = re.findall(r"\w+", (text or "").lower(), re.UNICODE)
+    return len(words) >= 30 and len(set(words)) / len(words) < 0.15
+
+
+_IOC_PATTERNS = {
+    "ipv4": re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"),
+    "onion": re.compile(r"\b(?:[a-z2-7]{56}|[a-z2-7]{16})\.onion\b", re.IGNORECASE),
+    "hash": re.compile(r"\b(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})\b", re.IGNORECASE),
+    "email": re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b"),
+    "btc": re.compile(r"\b(?:bc1[a-z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})\b"),
+    "eth": re.compile(r"\b0x[a-fA-F0-9]{40}\b"),
+}
+
+# Resultado da última verificação de IOCs (avaliação/diagnóstico).
+last_ioc_check: dict = {}
+
+
+def verify_iocs(summary: str, evidence: dict, query: str = "") -> dict:
+    """IOCs citados no relatório e quais aparecem literalmente na evidência dada ao modelo."""
+    source_text = "\n".join(evidence.values())
+    source_low = source_text.lower()
+    query_low = (query or "").lower()
+    found, verified, unverified = [], [], []
+    for kind, rx in _IOC_PATTERNS.items():
+        for m in rx.finditer(summary or ""):
+            ioc = m.group(0)
+            key = ioc if kind == "btc" else ioc.lower()
+            if key in found or (key in query_low):
+                continue
+            found.append(key)
+            present = (ioc in source_text) if kind == "btc" else (key in source_low)
+            (verified if present else unverified).append(ioc)
+    return {"total": len(found), "verified": len(verified), "unverified": unverified}
+
+
+def _append_ioc_check(summary: str, evidence: dict, query: str) -> str:
+    global last_ioc_check
+    chk = verify_iocs(summary, evidence, query)
+    last_ioc_check = chk
+    if not chk["total"]:
+        return summary
+    note = (f"\n\n---\n**Verificação automática de IOCs:** {chk['total']} identificado(s) no relatório; "
+            f"{chk['verified']} presente(s) na evidência fornecida ao modelo")
+    if chk["unverified"]:
+        note += ("; **não encontrado(s) na evidência (possível alucinação):** "
+                 + ", ".join(f"`{x}`" for x in chk["unverified"][:20]))
+    return summary + note + "."
 
 
 # Fragmentos literais das instruções entre parênteses de _OUTPUT_FORMAT.

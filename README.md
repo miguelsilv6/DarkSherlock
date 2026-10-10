@@ -236,6 +236,8 @@ services:
       - /opt/darksherlock/investigations:/app/investigations       # Investigações persistentes
       - /opt/darksherlock/logs:/app/logs                          # Logs persistentes
       - /opt/darksherlock/config:/app/config                      # Motores de pesquisa
+      - /opt/darksherlock/referrals:/app/referrals                # Registo para denúncia (salvaguarda ética)
+      - /opt/darksherlock/models:/app/models                      # Modelos GGUF embutidos (cache)
     extra_hosts:
       - "host.docker.internal:host-gateway"    # Acesso ao Ollama no host
     healthcheck:
@@ -577,6 +579,38 @@ The tool is designed for:
 > indexing of public sections. The adapter enforces a minimum 2-second
 > interval between requests and persists sessions locally to minimise
 > footprint on the target service.
+
+### Avaliação com dados reais (Capítulo 6)
+
+Os testes de avaliação usam **casos públicos reais** (grupos e vítimas já
+noticiados ou anunciados em leak sites, fugas públicas e, no domínio
+Identidade, dados do próprio investigador), **rasurados no relatório**. Os
+dados reais nunca entram no Git.
+
+1. Ativar o hook que recusa commits com dados reais (uma vez por clone):
+   `git config core.hooksPath .githooks`
+2. Copiar `evaluation/scenarios.example.json` para
+   `evaluation/scenarios.local.json` (ignorado pelo Git) e preencher os
+   cenários reais: `query`, `label` (pseudónimo que aparece no relatório) e
+   `redact` (termos a rasurar; se faltar, rasuram-se os termos-chave da query).
+3. Correr a bateria: `python evaluation/run_scenarios.py --model "<modelo>"`.
+   Com cenários reais, o terminal mostra o pseudónimo em vez da query.
+4. Rasurar antes de usar no relatório:
+   `python evaluation/redact.py investigations/eval_*.json evaluation/results/ --out evaluation/redacted`
+   e confirmar com `python evaluation/redact.py --check evaluation/redacted`.
+   Os endereços `.onion` passam a `[onion:<código>]` e os emails a
+   `[email:<código>]` (o mesmo endereço dá sempre o mesmo código). Ler sempre
+   o texto final: a verificação automática não substitui a revisão.
+
+Cada investigação grava `pipeline_version`; as ferramentas de análise
+(`check_runs`, `tabela13`, `eq02_eq03`, `eq04_review`, `pool_preview`) não
+misturam versões sem `--pipeline-version`. As execuções anteriores à revisão
+de outubro de 2026 são `1.0-legacy`.
+
+**Salvaguarda ética:** ligações com indícios de abuso sexual de menores nunca
+são pedidas; ficam registadas em `referrals/csam_referrals.jsonl` (URL, motor,
+hora e padrão; sem título nem conteúdo), fora do Git, para encaminhamento às
+autoridades competentes.
 
 ---
 

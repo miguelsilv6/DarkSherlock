@@ -36,10 +36,15 @@ RUN pip install --upgrade pip && \
 # ===========================================================================
 FROM python:3.10-slim AS runtime
 
+# libgomp1: runtime OpenMP de que o llama-cpp-python precisa (sem ele o modelo
+# embutido falha com "libgomp.so.1: cannot open shared object file").
+# curl: usado pelo healthcheck do docker-compose (README).
 RUN DEBIAN_FRONTEND="noninteractive" apt-get update && \
     apt-get install -y --no-install-recommends \
       tor \
       libcurl4 \
+      libgomp1 \
+      curl \
       ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
@@ -51,11 +56,14 @@ COPY . .
 
 RUN chmod +x /app/entrypoint.sh
 
-# Pasta de cache dos GGUF embutidos. Declarada como volume para que o modelo
-# (centenas de MB) persista entre recriações do contentor e não seja
-# re-descarregado a cada arranque.
-RUN mkdir -p /app/models
-VOLUME ["/app/models"]
+# Dados que têm de sobreviver à recriação do contentor: modelos GGUF (centenas
+# de MB), investigações (evidência + hashes), logs/audit trail, configuração
+# dos motores e o registo de denúncias da salvaguarda ética. O .dockerignore
+# impede que as cópias locais destas pastas (e o .env) entrem na imagem.
+ENV DARKSHERLOCK_MODELS_DIR=/app/models
+RUN mkdir -p /app/models /app/investigations /app/logs /app/config /app/referrals && \
+    chmod 700 /app/investigations /app/referrals
+VOLUME ["/app/models", "/app/investigations", "/app/logs", "/app/config", "/app/referrals"]
 
 EXPOSE 8501
 

@@ -18,7 +18,6 @@ Autores: tese de mestrado em Cibersegurança
 """
 
 import hashlib
-import textwrap
 from datetime import datetime, timezone
 from fpdf import FPDF
 
@@ -151,6 +150,32 @@ class _ForensicPDF(FPDF):
 # ---------------------------------------------------------------------------
 # Geração do PDF Forense
 # ---------------------------------------------------------------------------
+
+def investigation_pdf_data(inv: dict) -> dict:
+    """Dados para generate_forensic_pdf a partir de uma investigação gravada (JSON).
+
+    Usa a hora gravada da investigação (não a hora a que o PDF é gerado) e as
+    contagens reais: resultados da pesquisa (search_results) e fontes raspadas
+    (scraped_content / hashes), em vez do n.º de fontes selecionadas.
+    """
+    integrity = inv.get("integrity", {}) or {}
+    scraped = inv.get("scraped_content", {}) or {}
+    return {
+        "audit_id": inv.get("audit_id", ""),
+        "query": inv.get("query", ""),
+        "refined_query": inv.get("refined_query", ""),
+        "model": inv.get("model", ""),
+        "preset": inv.get("preset", ""),
+        "timestamp_utc": inv.get("timestamp_utc") or inv.get("timestamp", ""),
+        "active_engines": inv.get("active_engines", []),
+        "sources": inv.get("sources", []),
+        "integrity": integrity,
+        "scraped_content": scraped,
+        "summary": inv.get("summary", ""),
+        "results_found": len(inv.get("search_results") or inv.get("sources", [])),
+        "results_scraped": len(scraped) or len(integrity.get("sources", {})),
+    }
+
 
 def generate_forensic_pdf(data: dict) -> bytes:
     """
@@ -331,7 +356,7 @@ def generate_forensic_pdf(data: dict) -> bytes:
     pdf.set_font("Courier", "", 7)
     pdf.set_fill_color(248, 248, 252)
 
-    for url, sha in list(source_hashes.items())[:15]:  # Limitar a 15 para não exceder página
+    for url, sha in source_hashes.items():  # todos (a quebra de página é automática)
         # URL truncada para caber na linha
         short_url = (url[:55] + "...") if len(url) > 58 else url
         pdf.set_fill_color(248, 248, 252)
@@ -348,11 +373,24 @@ def generate_forensic_pdf(data: dict) -> bytes:
     pdf.add_page()
     _section_title("3. Fontes Analisadas")
 
-    pdf.set_font("Helvetica", "", 9)
-    pdf.cell(0, 5, f"Total de fontes analisadas: {len(sources)}")
-    pdf.ln(7)
+    # Só as fontes que entraram na análise (raspadas com sucesso e relevantes),
+    # pela mesma ordem e numeração [FONTE N] que o LLM recebeu. A ordem é a de
+    # scraped_content (ordem de relevância da Etapa 5), senão a dos hashes.
+    analysed_urls = list((data.get("scraped_content") or {}).keys()) or list(source_hashes.keys())
+    meta = {s_.get("link", ""): s_ for s_ in sources}
+    analysed = [meta.get(u, {"link": u, "title": "Sem titulo"}) for u in analysed_urls]
+    not_analysed = len([s_ for s_ in sources if s_.get("link", "") not in set(analysed_urls)])
 
-    for i, item in enumerate(sources, 1):
+    pdf.set_font("Helvetica", "", 9)
+    pdf.cell(0, 5, f"Total de fontes analisadas: {len(analysed)}")
+    pdf.ln(5)
+    if not_analysed:
+        pdf.set_font("Helvetica", "I", 8)
+        pdf.cell(0, 5, f"Selecionadas mas nao analisadas (inacessiveis, bloqueadas ou fora do tema): {not_analysed}")
+        pdf.ln(5)
+    pdf.ln(2)
+
+    for i, item in enumerate(analysed, 1):
         title = _safe(item.get("title", "Sem titulo")[:70])
         link = item.get("link", "")
         retrieved = item.get("retrieved_at_utc", "")[:19].replace("T", " ")
@@ -361,7 +399,7 @@ def generate_forensic_pdf(data: dict) -> bytes:
 
         # Número e título
         pdf.set_font("Helvetica", "B", 9)
-        pdf.cell(8, 6, f"{i}.", border=0)
+        pdf.cell(22, 6, f"[FONTE {i}]", border=0)
         pdf.set_font("Helvetica", "B", 9)
         pdf.multi_cell(0, 6, title, border=0)
 
@@ -454,26 +492,32 @@ def generate_forensic_pdf(data: dict) -> bytes:
         (
             "Etapa 3 — Pesquisa nas Dark Web Engines",
             "A query refinada e enviada em paralelo a todas as engines de pesquisa ativas, "
-            "atraves do proxy SOCKS5h do Tor (porta 9050). Os resultados sao deduplicados "
-            "por URL e estampados com timestamp UTC.",
+            "atraves do proxy SOCKS5h do Tor (porta 9050). Descartam-se ligacoes de navegacao, "
+            "paginas das proprias engines e titulos de spam; os resultados sao deduplicados por "
+            "URL normalizado, combinados em rodizio por engine (max. 3 por host) e estampados "
+            "com timestamp UTC.",
         ),
         (
             "Etapa 4 — Filtragem por Relevancia (LLM)",
             "O LLM analisa os titulos e URLs dos resultados e seleciona os mais relevantes "
-            "para a query de investigacao, descartando resultados genericos ou irrelevantes.",
+            "para a query original, descartando resultados genericos ou irrelevantes.",
         ),
         (
             "Etapa 5 — Recolha de Conteudo (Scraping)",
-            "As paginas filtradas sao acedidas individualmente atraves do Tor. O conteudo HTML "
-            "e extraido, limpo (remocao de scripts e estilos) e truncado a 2000 caracteres por fonte. "
-            "Paginas inacessiveis (login walls, timeouts) sao removidas automaticamente. "
-            "Cada fonte recebe um hash SHA-256 para garantia de integridade.",
+            "As paginas filtradas sao acedidas individualmente atraves do Tor. So contam como "
+            "evidencia respostas 200 de tipo HTML/texto, sem paginas de erro ou captcha; o texto "
+            "(ate 20.000 caracteres) e extraido sem scripts e estilos. Mantem-se apenas as fontes "
+            "cujo texto menciona os termos-chave da query, ordenadas por relevancia. Cada fonte "
+            "recebe um hash SHA-256. Ligacoes com indicios de abuso sexual de menores nunca sao "
+            "pedidas (salvaguarda etica) e ficam registadas a parte para denuncia.",
         ),
         (
             "Etapa 6 — Geracao de Sumario de Inteligencia (LLM)",
             "O LLM analisa o conteudo recolhido e gera um relatorio de inteligencia estruturado "
             "em Portugues (Portugal), identificando IOCs, TTPs, threat actors e recomendacoes. "
-            "A resposta e limitada a 12.000 caracteres de contexto e 600 palavras de output.",
+            "De cada fonte entra o excerto de ate 1.500 caracteres que mais menciona os termos da "
+            "query, ate um total de 12.000 caracteres (menos, se o contexto do modelo for menor). "
+            "Os IOCs citados no relatorio sao verificados automaticamente contra o texto das fontes.",
         ),
     ]
 
