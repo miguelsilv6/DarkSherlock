@@ -640,6 +640,7 @@ _PRESET_TASK = {
 # tratar como guia e não como conteúdo.
 _OUTPUT_FORMAT = """
 Escreve um relatório forense em Português de Portugal com EXATAMENTE estas 5 secções, usando os cabeçalhos `##` tal como aparecem. NÃO copies as instruções entre parênteses para o relatório — substitui-as pelo conteúdo real.
+Usa APENAS a evidência fornecida. Cada afirmação factual indica a fonte como [FONTE N]. Não inventes IOCs, nomes, datas nem números: se a evidência não os tiver, diz que não foram identificados. Os insights e próximos passos têm de decorrer do que as fontes mostram.
 
 ## 1. Query: {query}
 
@@ -647,7 +648,7 @@ Escreve um relatório forense em Português de Portugal com EXATAMENTE estas 5 s
 (Cria uma subsecção `###` por cada fonte analisada; em cada uma, cita excertos directos do texto e explica em 1-2 frases a relevância para a query.)
 
 ## 3. Artefactos / IOCs
-(Lista os indicadores técnicos — IPs, domínios, hashes, wallets, emails — cada um com a fonte de origem. Se não houver, escreve "Nenhum identificado".)
+(Lista os indicadores técnicos — IPs, domínios, hashes, wallets, emails — que aparecem LITERALMENTE nas fontes, cada um com a fonte de origem [FONTE N]. Se não houver, escreve "Nenhum identificado".)
 
 ## 4. Insights Chave
 (3-5 observações accionáveis.)
@@ -714,6 +715,10 @@ def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int
 
     `min_keyword_hits` mantém-se por compatibilidade e já não é usado.
 
+    Texto de spam/repetição (_is_degenerate) é sempre descartado, aqui e não
+    na Etapa 6, para a lista de fontes — e a numeração [FONTE N] — ser a mesma
+    no prompt, nos hashes e no PDF.
+
     Devolve: dict {url: texto} ordenado por (termos-chave encontrados, pontuação).
     """
     global last_relevance_outcome, last_relevance_scores
@@ -725,7 +730,12 @@ def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int
     last_relevance_scores = {}
     for url, content in scraped.items():
         m = tm.match(content, terms)
+        degenerate = _is_degenerate(content)
         last_relevance_scores[url] = {"score": round(m.score, 3), "key_found": m.key_found, "found": m.found}
+        if degenerate:
+            # spam de SEO ("leak|leak|leak..."): pode conter os termos, mas não é evidência
+            last_relevance_scores[url]["degenerate"] = True
+            continue
         if tm.is_relevant(m, terms):
             scored.append((m.key_found, m.score, url))
     scored.sort(key=lambda x: (-x[0], -x[1]))
@@ -837,6 +847,7 @@ def generate_summary(
     # Limites recebidos via parâmetros (com defaults de módulo). Mantém-se
     # a iteração tal-qual: fontes mais relevantes primeiro (já ordenadas
     # por filter_results), corte global quando max_total_chars é atingido.
+    evidence = None
     if isinstance(content, dict):
         # Não exceder o contexto do modelo: o limite efetivo é o menor entre
         # max_total_chars e o que cabe depois do prompt fixo e da resposta.
@@ -856,6 +867,7 @@ def generate_summary(
             chunk = tm.best_window(text, _summary_terms, min(per_source_limit, remaining))
             truncated[url] = chunk
             total += len(chunk)
+        evidence = dict(truncated)
         content = _format_content_for_llm(truncated)
         if not content:
             logger.warning("generate_summary: conteúdo formatado ficou vazio após truncagem — a devolver sem invocar o LLM.")
@@ -889,8 +901,69 @@ Produz a análise forense agora. Responde APENAS em Português de Portugal."""
     )
     chain = prompt_template | llm | StrOutputParser()
     result = _strip_reasoning(chain.invoke({"user_input": user_message}))
+    if isinstance(evidence, dict):
+        result = _append_ioc_check(result, evidence, query)
+        if len(evidence) == 1:
+            result = (
+                "> ⚠️ **Evidência limitada:** este relatório baseia-se numa única fonte. "
+                "Confirma as conclusões noutras fontes antes de as usar.\n\n" + result
+            )
     result = _flag_refusal(result)
     return _flag_scaffold_echo(result)
+
+
+# ---------------------------------------------------------------------------
+# Qualidade da evidência e verificação de IOCs (Etapa 6)
+# ---------------------------------------------------------------------------
+def _is_degenerate(text: str) -> bool:
+    """Texto de spam/repetição ("leak|leak|leak..."): muitas palavras e muito poucas diferentes."""
+    words = re.findall(r"\w+", (text or "").lower(), re.UNICODE)
+    return len(words) >= 30 and len(set(words)) / len(words) < 0.15
+
+
+_IOC_PATTERNS = {
+    "ipv4": re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"),
+    "onion": re.compile(r"\b(?:[a-z2-7]{56}|[a-z2-7]{16})\.onion\b", re.IGNORECASE),
+    "hash": re.compile(r"\b(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})\b", re.IGNORECASE),
+    "email": re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b"),
+    "btc": re.compile(r"\b(?:bc1[a-z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})\b"),
+    "eth": re.compile(r"\b0x[a-fA-F0-9]{40}\b"),
+}
+
+# Resultado da última verificação de IOCs (avaliação/diagnóstico).
+last_ioc_check: dict = {}
+
+
+def verify_iocs(summary: str, evidence: dict, query: str = "") -> dict:
+    """IOCs citados no relatório e quais aparecem literalmente na evidência dada ao modelo."""
+    source_text = "\n".join(evidence.values())
+    source_low = source_text.lower()
+    query_low = (query or "").lower()
+    found, verified, unverified = [], [], []
+    for kind, rx in _IOC_PATTERNS.items():
+        for m in rx.finditer(summary or ""):
+            ioc = m.group(0)
+            key = ioc if kind == "btc" else ioc.lower()
+            if key in found or (key in query_low):
+                continue
+            found.append(key)
+            present = (ioc in source_text) if kind == "btc" else (key in source_low)
+            (verified if present else unverified).append(ioc)
+    return {"total": len(found), "verified": len(verified), "unverified": unverified}
+
+
+def _append_ioc_check(summary: str, evidence: dict, query: str) -> str:
+    global last_ioc_check
+    chk = verify_iocs(summary, evidence, query)
+    last_ioc_check = chk
+    if not chk["total"]:
+        return summary
+    note = (f"\n\n---\n**Verificação automática de IOCs:** {chk['total']} identificado(s) no relatório; "
+            f"{chk['verified']} presente(s) na evidência fornecida ao modelo")
+    if chk["unverified"]:
+        note += ("; **não encontrado(s) na evidência (possível alucinação):** "
+                 + ", ".join(f"`{x}`" for x in chk["unverified"][:20]))
+    return summary + note + "."
 
 
 # Fragmentos literais das instruções entre parênteses de _OUTPUT_FORMAT.

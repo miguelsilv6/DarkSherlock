@@ -25,7 +25,7 @@ from search import get_search_results
 from llm_utils import BufferedStreamingHandler, get_model_choices
 from llm import get_llm, refine_query, filter_results, generate_summary, filter_scraped_by_relevance, PRESET_PROMPTS
 from engine_manager import get_active_engines
-from report import compute_integrity_hashes, generate_forensic_pdf
+from report import compute_integrity_hashes, generate_forensic_pdf, investigation_pdf_data
 from audit import log_investigation, setup_file_logging
 
 # Configura o logging para ficheiro (captura debug/info de todos os módulos)
@@ -78,7 +78,7 @@ def load_investigations():
 def save_investigation(
     query, refined_query, model_name, preset_label, sources, summary,
     audit_id="", active_engines=None, integrity=None, scraped_content=None,
-    engine_status=None, search_results=None,
+    engine_status=None, search_results=None, timestamp_utc=None,
 ):
     """Guarda investigação completa com campos forenses (hashes, timestamps, audit_id).
 
@@ -96,7 +96,7 @@ def save_investigation(
     data = {
         "audit_id": audit_id,
         "timestamp": datetime.now().isoformat(),
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc": timestamp_utc or datetime.now(timezone.utc).isoformat(),
         "query": query,
         "refined_query": refined_query,
         "model": model_name,
@@ -244,20 +244,7 @@ if "loaded_investigation" in st.session_state and not run_button:
     st.divider()
 
     # Botões de download — regenera o PDF a partir dos dados guardados
-    _inv_pdf_data = {
-        "audit_id": inv.get("audit_id", ""),
-        "query": inv["query"],
-        "refined_query": inv["refined_query"],
-        "model": inv["model"],
-        "preset": inv["preset"],
-        "timestamp_utc": inv.get("timestamp_utc", inv["timestamp"]),
-        "active_engines": inv.get("active_engines", []),
-        "sources": inv["sources"],
-        "integrity": inv.get("integrity", {}),
-        "summary": inv["summary"],
-        "results_found": len(inv["sources"]),
-        "results_scraped": len(inv["sources"]),
-    }
+    _inv_pdf_data = investigation_pdf_data(inv)
     _inv_pdf_bytes = generate_forensic_pdf(_inv_pdf_data)
     _inv_now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     _dl1, _dl2 = st.columns(2)
@@ -492,6 +479,8 @@ if run_button and query:
     audit_id = str(uuid.uuid4())
     integrity = st.session_state.get("integrity", {})
 
+    # Hora da investigação: a mesma no JSON e no PDF (o PDF não usa a hora a que é gerado).
+    run_ts_utc = datetime.now(timezone.utc).isoformat()
     _fname = save_investigation(
         query=query,
         refined_query=st.session_state.refined,
@@ -505,6 +494,7 @@ if run_button and query:
         scraped_content=meaningful_scraped,
         engine_status=st.session_state.get("engine_status", {}),
         search_results=st.session_state.get("results", []),
+        timestamp_utc=run_ts_utc,
     )
 
     _engine_status = st.session_state.get("engine_status", {})
@@ -542,6 +532,8 @@ if run_button and query:
         "active_engines": [e["name"] for e in active_engines],
         "pipeline_ms": pipeline_ms,
         "fname": _fname,
+        "timestamp_utc": run_ts_utc,
+        "scraped_content": meaningful_scraped,
     }
 
     # Apresentação inline imediata (durante o run do pipeline)
@@ -564,13 +556,14 @@ if run_button and query:
             "refined_query": st.session_state.refined,
             "model": model,
             "preset": selected_preset_label,
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "timestamp_utc": run_ts_utc,
             "active_engines": [e["name"] for e in active_engines],
             "sources": st.session_state.filtered,
             "integrity": integrity,
             "summary": st.session_state.streamed_summary,
             "results_found": len(st.session_state.results),
             "results_scraped": scraped_count,
+            "scraped_content": meaningful_scraped,
         }
         pdf_bytes = generate_forensic_pdf(pdf_data)
 
@@ -630,13 +623,14 @@ if "pipeline_complete" in st.session_state and not run_button and "loaded_invest
         "refined_query": _pc["refined"],
         "model": _pc["model"],
         "preset": _pc["preset_label"],
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc": _pc.get("timestamp_utc") or datetime.now(timezone.utc).isoformat(),
         "active_engines": _pc["active_engines"],
         "sources": _pc["filtered"],
         "integrity": _pc["integrity"],
         "summary": _pc["summary"],
         "results_found": _pc["results_count"],
         "results_scraped": _pc["scraped_count"],
+        "scraped_content": _pc.get("scraped_content", {}),
     }
     _pc_pdf_bytes = generate_forensic_pdf(_pc_pdf_data)
 

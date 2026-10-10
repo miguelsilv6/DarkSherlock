@@ -41,7 +41,7 @@ from search import get_search_results
 from llm_utils import BufferedStreamingHandler, get_model_choices
 from llm import get_llm, refine_query, filter_results, generate_summary, filter_scraped_by_relevance, PRESET_PROMPTS
 from engine_manager import get_active_engines
-from report import compute_integrity_hashes, generate_forensic_pdf
+from report import compute_integrity_hashes, generate_forensic_pdf, investigation_pdf_data
 from audit import log_investigation, setup_file_logging
 
 # Configura o logging para ficheiro (captura debug/info de todos os módulos)
@@ -216,13 +216,14 @@ def _render_pipeline_result(
         "refined_query": pc["refined"],
         "model": pc["model"],
         "preset": pc["preset_label"],
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc": pc.get("timestamp_utc") or datetime.now(timezone.utc).isoformat(),
         "active_engines": pc["active_engines"],
         "sources": pc["filtered"],
         "integrity": pc["integrity"],
         "summary": pc["summary"],
         "results_found": pc["results_count"],
         "results_scraped": pc["scraped_count"],
+        "scraped_content": pc.get("scraped_content", {}),
     }
     pdf_bytes = generate_forensic_pdf(pdf_data)
     now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -268,6 +269,7 @@ def save_investigation(
     scraped_content: dict = None,
     engine_status: dict = None,
     search_results: list = None,
+    timestamp_utc: str = None,
 ) -> str:
     """Guarda uma investigação completa em disco no formato JSON. Retorna o nome do ficheiro.
 
@@ -303,7 +305,7 @@ def save_investigation(
         # Identificação e rastreabilidade
         "audit_id": audit_id,
         "timestamp": datetime.now().isoformat(),
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc": timestamp_utc or datetime.now(timezone.utc).isoformat(),
         # Dados da investigação
         "query": query,
         "refined_query": refined_query,
@@ -651,20 +653,7 @@ if "loaded_investigation" in st.session_state and not run_button:
     st.divider()
 
     # Botões de download — regenera o PDF a partir dos dados guardados
-    _inv_pdf_data = {
-        "audit_id": inv.get("audit_id", ""),
-        "query": inv["query"],
-        "refined_query": inv["refined_query"],
-        "model": inv["model"],
-        "preset": inv["preset"],
-        "timestamp_utc": inv.get("timestamp_utc", inv["timestamp"]),
-        "active_engines": inv.get("active_engines", []),
-        "sources": inv["sources"],
-        "integrity": inv.get("integrity", {}),
-        "summary": inv["summary"],
-        "results_found": len(inv["sources"]),
-        "results_scraped": len(inv["sources"]),
-    }
+    _inv_pdf_data = investigation_pdf_data(inv)
     _inv_pdf_bytes = generate_forensic_pdf(_inv_pdf_data)
     _inv_now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     _dl1, _dl2 = st.columns(2)
@@ -1044,6 +1033,8 @@ if run_button and query:
     # Gerar ID único para esta investigação (usado no PDF e no log de auditoria)
     audit_id = str(uuid.uuid4())
     integrity = st.session_state.get("integrity", {})
+    # Hora da investigação: a mesma no JSON e no PDF (o PDF não usa a hora a que é gerado).
+    run_ts_utc = datetime.now(timezone.utc).isoformat()
 
     # Guardar investigação em disco com campos forenses completos
     _fname = save_investigation(
@@ -1059,6 +1050,7 @@ if run_button and query:
         scraped_content=st.session_state.get("scraped", {}),
         engine_status=st.session_state.get("engine_status", {}),
         search_results=st.session_state.get("results", []),
+        timestamp_utc=run_ts_utc,
     )
 
     # Registar no log de auditoria
@@ -1103,6 +1095,8 @@ if run_button and query:
         "active_engines": [e["name"] for e in active_engines],
         "pipeline_ms": pipeline_ms,
         "fname": _fname,
+        "timestamp_utc": run_ts_utc,
+        "scraped_content": st.session_state.get("scraped", {}),
     }
 
     # Apresentação inline imediata (durante o run do pipeline).
