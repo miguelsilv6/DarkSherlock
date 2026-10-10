@@ -1,5 +1,20 @@
 [server]
 runOnSave = true
+# Pastas de dados que o Streamlit não deve vigiar: só mudam com a app a correr
+# (logs, modelos descarregados, investigações, ...) e cada escrita gerava eventos
+# do sistema de ficheiros inúteis — em conjunto com o log em DEBUG, um ciclo que
+# enchia o disco (ver audit.setup_file_logging).
+folderWatchBlacklist = [
+    "logs",
+    "models",
+    "investigations",
+    "referrals",
+    "config",
+    "evaluation/results",
+    "evaluation/redacted",
+    "evaluation/ground_truth",
+    "evaluation/baseline_manual/sources",
+]
 
 [theme]
 base = "dark"
