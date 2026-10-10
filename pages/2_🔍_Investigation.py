@@ -349,7 +349,8 @@ if run_button and query:
         t0 = time.time()
         try:
             st.session_state.filtered = filter_results(
-                llm, st.session_state.refined, st.session_state.results
+                # A query original (a refinada só serve para a pesquisa).
+                llm, query, st.session_state.results
             )
         except Exception as e:  # noqa: BLE001 — mostra o erro em vez de um traceback
             _stage_error("filter the results (Stage 4)", e)

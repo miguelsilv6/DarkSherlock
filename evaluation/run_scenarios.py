@@ -193,7 +193,7 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
 
     # Etapa 4 — Filtragem por relevância (LLM)
     t0 = time.time()
-    filtered = filter_results(llm, refined, results)
+    filtered = filter_results(llm, query, results)  # Etapas 4–6 usam a query original
     stage4_outcome = llm_module.last_filter_outcome
     if len(filtered) > MAX_SCRAPE:
         filtered = filtered[:MAX_SCRAPE]
@@ -207,6 +207,8 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
     meaningful = {u: c for u, c in scraped.items() if len(c) > 150}
     pre_relevance = len(meaningful)
     meaningful = filter_scraped_by_relevance(query, meaningful)
+    stage5_outcome = llm_module.last_relevance_outcome
+    relevance_scores = dict(llm_module.last_relevance_scores)
     scraped_at = datetime.now(timezone.utc).isoformat()
     for item in filtered:
         if item.get("link", "") in meaningful:
@@ -216,7 +218,7 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
 
     # Etapa 6 — Geração do relatório
     t0 = time.time()
-    summary = generate_summary(llm, refined, meaningful, preset=preset)
+    summary = generate_summary(llm, query, meaningful, preset=preset)
     timings_ms["generate_summary"] = round((time.time() - t0) * 1000)
 
     total_ms = round((time.time() - t_start) * 1000)
@@ -242,6 +244,9 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         "stage4_outcome": stage4_outcome,
         # N.º de URLs do Top-K que a salvaguarda ética (safety.py) impediu de pedir.
         "safety_blocked": safety_blocked,
+        # Etapa 5: "kept" / "empty" / "no_terms" e pontuação de cada fonte raspada.
+        "stage5_outcome": stage5_outcome,
+        "relevance_scores": relevance_scores,
         # Desfecho do pedido de cada página do Top-K (ok, http_error, timeout, ...).
         "scrape_outcomes": scrape_outcomes,
         "summary": summary,
@@ -290,6 +295,7 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         "audit_id": audit_id,
         "investigation_file": inv_fname,
         "stage4_outcome": stage4_outcome,
+        "stage5_outcome": stage5_outcome,
         "safety_blocked": safety_blocked,
         "results_found": len(results),
         "results_filtered": len(filtered),

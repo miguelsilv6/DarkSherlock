@@ -95,7 +95,7 @@ def _prepare_content(scenario: dict, llm_instance) -> tuple[str, dict]:
     results, _engine_status = get_search_results(refined, max_workers=base.THREADS)
     if len(results) > base.MAX_RESULTS:
         results = results[:base.MAX_RESULTS]
-    filtered = llm.filter_results(llm_instance, refined, results)
+    filtered = llm.filter_results(llm_instance, scenario["query"], results)  # query original, como no pipeline
     if len(filtered) > base.MAX_SCRAPE:
         filtered = filtered[:base.MAX_SCRAPE]
     scraped = scrape_multiple(filtered, max_workers=base.THREADS)
@@ -116,7 +116,7 @@ def run_one_ablation(scenario: dict, model_choice: str, llm_instance, out_dir: P
         t0 = time.time()
         try:
             summary = llm.generate_summary(
-                llm_instance, refined, dict(meaningful),
+                llm_instance, scenario["query"], dict(meaningful),
                 preset=scenario["preset"], mitigation_level=level,
             )
         finally:

@@ -342,7 +342,10 @@ def scrape_multiple(urls_data, max_workers=5):
                         textual raspado (ou título em caso de falha).
     """
     results = {}
-    max_chars = 2000  # Limite máximo de caracteres por URL para proteger a janela de contexto do LLM
+    # Texto guardado por página. Era 2000 caracteres, o que fazia a Etapa 5
+    # procurar os termos só no início da página (menus, cabeçalhos). O limite
+    # ao que o LLM lê é aplicado depois, na Etapa 6 (generate_summary).
+    max_chars = 20000
 
     # Salvaguarda ética (ver safety.py): URLs cujo título/URL indique conteúdo
     # de abuso sexual de menores nunca são pedidos. Só se regista o n.º de
