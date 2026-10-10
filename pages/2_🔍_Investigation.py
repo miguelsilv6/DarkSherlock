@@ -5,6 +5,9 @@ import json
 import time
 import uuid
 import streamlit as st
+import scrape as scrape_module
+from collections import Counter
+import settings_state
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +38,12 @@ st.set_page_config(
     page_icon="🔍",
     initial_sidebar_state="expanded",
 )
+
+
+def _stage_error(stage: str, err: Exception) -> None:
+    """Mostra o erro de uma etapa e para a execução (em vez de um traceback)."""
+    st.error(f"Failed to {stage}.\n\nError: {str(err).strip() or err.__class__.__name__}")
+    st.stop()
 
 settings = render_sidebar()
 model = settings["model"]
@@ -175,10 +184,12 @@ def _sync_preset_inv():
     """Callback on_change das pills → sincroniza com o selectbox da sidebar."""
     val = st.session_state.get("preset_pills")
     if val:
-        st.session_state["preset_select"] = val.split("  ", 1)[1]
+        label = val.split("  ", 1)[1]
+        st.session_state["preset_select"] = label
+        st.session_state[settings_state.PREFIX + "preset_select"] = label
 
 
-_current_label_inv = st.session_state.get("preset_select", _PRESET_LABELS_INV[0])
+_current_label_inv = settings_state.get("preset_select", _PRESET_LABELS_INV[0])
 _default_idx_inv = (
     _PRESET_LABELS_INV.index(_current_label_inv)
     if _current_label_inv in _PRESET_LABELS_INV
@@ -314,9 +325,12 @@ if run_button and query:
         # repetir o processo aqui. A deduplicação dupla era redundante e O(2n).
         # Query passa intacta — encoding URL é feito em `fetch_search_results`
         # para engines simples; adapters recebem a query original.
-        st.session_state.results, st.session_state.engine_status = get_search_results(
-            st.session_state.refined, max_workers=threads
-        )
+        try:
+            st.session_state.results, st.session_state.engine_status = get_search_results(
+                st.session_state.refined, max_workers=threads
+            )
+        except Exception as e:  # noqa: BLE001 — mostra o erro em vez de um traceback
+            _stage_error("search the dark web (Stage 3)", e)
         if len(st.session_state.results) > max_results:
             st.session_state.results = st.session_state.results[:max_results]
         # Estampar timestamp UTC de recolha em cada resultado
@@ -333,9 +347,12 @@ if run_button and query:
     # Stage 4 — Filter Results
     with st.status("**Stage 4/6** — Filtering results with LLM...", expanded=True) as status:
         t0 = time.time()
-        st.session_state.filtered = filter_results(
-            llm, st.session_state.refined, st.session_state.results
-        )
+        try:
+            st.session_state.filtered = filter_results(
+                llm, st.session_state.refined, st.session_state.results
+            )
+        except Exception as e:  # noqa: BLE001 — mostra o erro em vez de um traceback
+            _stage_error("filter the results (Stage 4)", e)
         if len(st.session_state.filtered) > max_scrape:
             st.session_state.filtered = st.session_state.filtered[:max_scrape]
         elapsed = round((time.time() - t0) * 1000)
@@ -358,14 +375,25 @@ if run_button and query:
     # Stage 5 — Scrape Content
     with st.status(f"**Stage 5/6** — Scraping {len(st.session_state.filtered)} pages...", expanded=True) as status:
         t0 = time.time()
-        st.session_state.scraped = scrape_multiple(
-            st.session_state.filtered, max_workers=threads
-        )
+        try:
+            st.session_state.scraped = scrape_multiple(
+                st.session_state.filtered, max_workers=threads
+            )
+        except Exception as e:  # noqa: BLE001 — mostra o erro em vez de um traceback
+            _stage_error("scrape the selected pages (Stage 5)", e)
+        # Contagens desta etapa (scrape.last_details/last_blocked_count): páginas
+        # pedidas, válidas, inacessíveis/erro, e bloqueadas pela salvaguarda ética.
+        _requested = len(st.session_state.filtered)
+        _valid = len(st.session_state.scraped)
+        _blocked = scrape_module.last_blocked_count
+        st.session_state.safety_blocked = _blocked
+        st.session_state.scrape_outcomes = dict(Counter(
+            d.get("status", "?") for d in scrape_module.last_details.values()))
         # Filter out failed scrapes (returned only the page title, no actual content)
         meaningful_scraped = {
             url: content
             for url, content in st.session_state.scraped.items()
-            if len(content) > 150
+            if len(content) > 150  # o raspador já só devolve páginas válidas; mantém-se o mínimo
         }
 
         # Filtra por relevância: descarta fontes cujo conteúdo scrapeado
@@ -384,8 +412,10 @@ if run_button and query:
 
         elapsed = round((time.time() - t0) * 1000)
         scraped_count = len(meaningful_scraped)
-        failed_count = len(st.session_state.scraped) - scraped_count
-        note = f" ({failed_count} inaccessible pages removed)" if failed_count else ""
+        failed_count = max(0, _requested - _valid - _blocked)
+        note = f" ({failed_count} inaccessible/error pages removed)" if failed_count else ""
+        if _blocked:
+            note += f" ({_blocked} blocked by the ethics safeguard — logged for referral, never requested)"
         relevance_note = f" ({relevance_removed} irrelevant pages removed)" if relevance_removed else ""
         st.write(f"Scraped **{scraped_count}** pages with content{note}{relevance_note}")
         st.caption(f"Hash global SHA-256: `{integrity['overall_sha256'][:16]}...`")
@@ -434,16 +464,22 @@ if run_button and query:
         # Captura o retorno como fonte autoritativa: backends sem streaming
         # (e.g. alguns llama.cpp) não disparam o callback, o que deixaria
         # streamed_summary vazio e produziria um relatório em branco.
-        _result_text = generate_summary(
-            llm,
-            query,
-            meaningful_scraped,
-            preset=selected_preset,
-            custom_instructions=custom_instructions,
-        )
-        if not st.session_state.streamed_summary and _result_text:
+        try:
+            _result_text = generate_summary(
+                llm,
+                query,
+                meaningful_scraped,
+                preset=selected_preset,
+                custom_instructions=custom_instructions,
+            )
+        except Exception as e:  # noqa: BLE001 — mostra o erro em vez de um traceback
+            _stage_error("generate the report (Stage 6)", e)
+        # O valor devolvido é a versão final (inclui os avisos de recusa ou de
+        # molde por preencher que o streaming não tem): usa-se sempre esse.
+        if _result_text:
+            if _result_text != st.session_state.streamed_summary:
+                summary_slot.markdown(_result_text)
             st.session_state.streamed_summary = _result_text
-            summary_slot.markdown(_result_text)
         elapsed = round((time.time() - t0) * 1000)
         status.update(
             label=f"**Stage 6/6** — Summary generated ({_fmt_ms(elapsed)})",

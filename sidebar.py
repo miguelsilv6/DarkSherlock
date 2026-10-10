@@ -12,6 +12,7 @@ configurações, lido do session_state em vez de widgets inline.
 
 import streamlit as st
 from llm_utils import get_model_choices
+import settings_state
 
 
 def render_sidebar() -> dict:
@@ -29,33 +30,7 @@ def render_sidebar() -> dict:
     st.sidebar.title("DarkSherlock")
     st.sidebar.text("AI-Powered Dark Web OSINT Tool")
 
-    # ---------------------------------------------------------------------------
-    # Lê configurações do session_state (guardadas pela página Settings)
-    # ---------------------------------------------------------------------------
-    _preset_options = {
-        "Dark Web Threat Intel":          "threat_intel",
-        "Ransomware / Malware Focus":     "ransomware_malware",
-        "Personal / Identity Investigation": "personal_identity",
-        "Corporate Espionage / Data Leaks":  "corporate_espionage",
-    }
-
-    model_options = get_model_choices()
-    _default_model = model_options[0] if model_options else None
-
-    model               = st.session_state.get("model_select",      _default_model)
-    threads             = st.session_state.get("thread_slider",     4)
-    max_results         = st.session_state.get("max_results_slider", 50)
-    max_scrape          = st.session_state.get("max_scrape_slider",  10)
-    selected_preset_label = st.session_state.get("preset_select", "Dark Web Threat Intel")
-    selected_preset     = _preset_options.get(selected_preset_label, "threat_intel")
-    custom_instructions = st.session_state.get("custom_instructions", "")
-
-    return {
-        "model":                  model,
-        "threads":                threads,
-        "max_results":            max_results,
-        "max_scrape":             max_scrape,
-        "selected_preset":        selected_preset,
-        "selected_preset_label":  selected_preset_label,
-        "custom_instructions":    custom_instructions,
-    }
+    # Lê as definições guardadas pela página Settings (settings_state.py): as
+    # chaves dos widgets são apagadas pelo Streamlit ao mudar de página, mas as
+    # cópias persistentes não.
+    return settings_state.current(get_model_choices())

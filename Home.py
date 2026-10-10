@@ -31,6 +31,9 @@ import re
 import time
 import uuid
 import streamlit as st
+import scrape as scrape_module
+from collections import Counter
+import settings_state
 from datetime import datetime, timezone
 from pathlib import Path
 from scrape import scrape_multiple
@@ -474,20 +477,16 @@ else:
 # ---------------------------------------------------------------------------
 # Lê configurações do session_state (definidas em Settings)
 # ---------------------------------------------------------------------------
-_preset_options = {
-    "Dark Web Threat Intel":             "threat_intel",
-    "Ransomware / Malware Focus":        "ransomware_malware",
-    "Personal / Identity Investigation": "personal_identity",
-    "Corporate Espionage / Data Leaks":  "corporate_espionage",
-}
-_model_options = get_model_choices()
-model               = st.session_state.get("model_select",       _model_options[0] if _model_options else None)
-threads             = st.session_state.get("thread_slider",      4)
-max_results         = st.session_state.get("max_results_slider", 50)
-max_scrape          = st.session_state.get("max_scrape_slider",  10)
-selected_preset_label = st.session_state.get("preset_select",   "Dark Web Threat Intel")
-selected_preset     = _preset_options.get(selected_preset_label, "threat_intel")
-custom_instructions = st.session_state.get("custom_instructions", "")
+# As chaves dos widgets da página Settings são apagadas pelo Streamlit ao mudar
+# de página; settings_state guarda cópias persistentes (ver settings_state.py).
+_settings = settings_state.current(get_model_choices())
+model                 = _settings["model"]
+threads               = _settings["threads"]
+max_results           = _settings["max_results"]
+max_scrape            = _settings["max_scrape"]
+selected_preset_label = _settings["selected_preset_label"]
+selected_preset       = _settings["selected_preset"]
+custom_instructions   = _settings["custom_instructions"]
 
 
 # ---------------------------------------------------------------------------
@@ -571,12 +570,14 @@ def _sync_preset_from_pills():
     """
     val = st.session_state.get("preset_pills")
     if val:
-        st.session_state["preset_select"] = val.split("  ", 1)[1]
+        label = val.split("  ", 1)[1]
+        st.session_state["preset_select"] = label
+        st.session_state[settings_state.PREFIX + "preset_select"] = label
 
 
 # Deriva o preset por defeito do estado da sidebar (se já foi seleccionado
 # numa visita anterior) ou usa o primeiro como fallback.
-_current_sidebar_label = st.session_state.get("preset_select", _PRESET_LABELS[0])
+_current_sidebar_label = settings_state.get("preset_select", _PRESET_LABELS[0])
 _default_pill_index = (
     _PRESET_LABELS.index(_current_sidebar_label)
     if _current_sidebar_label in _PRESET_LABELS
@@ -771,7 +772,10 @@ if run_button and query:
         t0 = time.time()
         # search.py já deduplica os resultados por URL — não é necessário
         # repetir o processo aqui. A deduplicação dupla era redundante e O(2n).
-        st.session_state.results, st.session_state.engine_status = cached_search_results(st.session_state.refined)
+        try:
+            st.session_state.results, st.session_state.engine_status = cached_search_results(st.session_state.refined)
+        except Exception as e:  # noqa: BLE001 — mostra o erro em vez de um traceback
+            _render_pipeline_error("search the dark web (Stage 3)", e)
 
         # Aplica o limite máximo de resultados configurado na barra lateral
         if len(st.session_state.results) > max_results:
@@ -802,9 +806,12 @@ if run_button and query:
     # para controlar o tempo e o custo da etapa de extração seguinte.
     with st.status("**Stage 4/6** — Filtering results with LLM...", expanded=True) as status:
         t0 = time.time()
-        st.session_state.filtered = filter_results(
-            llm, st.session_state.refined, st.session_state.results
-        )
+        try:
+            st.session_state.filtered = filter_results(
+                llm, st.session_state.refined, st.session_state.results
+            )
+        except Exception as e:  # noqa: BLE001 — mostra o erro em vez de um traceback
+            _render_pipeline_error("filter the results (Stage 4)", e)
 
         # Aplica o limite máximo de páginas a extrair configurado na barra lateral
         if len(st.session_state.filtered) > max_scrape:
@@ -851,16 +858,27 @@ if run_button and query:
     # descartar páginas legítimas com conteúdo escasso.
     with st.status(f"**Stage 5/6** — Scraping {len(st.session_state.filtered)} pages...", expanded=True) as status:
         t0 = time.time()
-        st.session_state.scraped = cached_scrape_multiple(
-            st.session_state.filtered, threads
-        )
+        try:
+            st.session_state.scraped = cached_scrape_multiple(
+                st.session_state.filtered, threads
+            )
+        except Exception as e:  # noqa: BLE001 — mostra o erro em vez de um traceback
+            _render_pipeline_error("scrape the selected pages (Stage 5)", e)
+        # Contagens desta etapa (scrape.last_details/last_blocked_count): páginas
+        # pedidas, válidas, inacessíveis/erro, e bloqueadas pela salvaguarda ética.
+        _requested = len(st.session_state.filtered)
+        _valid = len(st.session_state.scraped)
+        _blocked = scrape_module.last_blocked_count
+        st.session_state.safety_blocked = _blocked
+        st.session_state.scrape_outcomes = dict(Counter(
+            d.get("status", "?") for d in scrape_module.last_details.values()))
 
         # Filtra resultados com conteúdo insuficiente (páginas inacessíveis
         # ou que devolveram apenas o título sem corpo de texto significativo)
         meaningful_scraped = {
             url: content
             for url, content in st.session_state.scraped.items()
-            if len(content) > 150
+            if len(content) > 150  # o raspador já só devolve páginas válidas; mantém-se o mínimo
         }
 
         # Filtra por relevância: descarta fontes cujo conteúdo scrapeado
@@ -888,9 +906,10 @@ if run_button and query:
 
         elapsed = round((time.time() - t0) * 1000)
         scraped_count = len(meaningful_scraped)
-        failed_count = len(st.session_state.scraped) - scraped_count
-
-        note = f" ({failed_count} inaccessible pages removed)" if failed_count else ""
+        failed_count = max(0, _requested - _valid - _blocked)
+        note = f" ({failed_count} inaccessible/error pages removed)" if failed_count else ""
+        if _blocked:
+            note += f" ({_blocked} blocked by the ethics safeguard — logged for referral, never requested)"
         relevance_note = f" ({relevance_removed} irrelevant pages removed)" if relevance_removed else ""
         st.write(f"Scraped **{scraped_count}** pages with content{note}{relevance_note}")
         st.caption(f"Hash global SHA-256: `{integrity['overall_sha256'][:16]}...`")
@@ -992,15 +1011,21 @@ if run_button and query:
         # modelos llama.cpp). Por isso capturamos também o valor de retorno e
         # usamo-lo como fonte autoritativa: sem isto, um backend sem streaming
         # produziria um relatório VAZIO (streamed_summary == "").
-        _result_text = generate_summary(
-            llm, query, meaningful_scraped,
-            preset=selected_preset, custom_instructions=custom_instructions,
-        )
-        # Reconciliação: prefere o texto transmitido (já renderizado live);
-        # se o streaming não disparou, usa o retorno e renderiza-o agora.
-        if not st.session_state.streamed_summary and _result_text:
+        try:
+            _result_text = generate_summary(
+                llm, query, meaningful_scraped,
+                preset=selected_preset, custom_instructions=custom_instructions,
+            )
+        except Exception as e:  # noqa: BLE001 — mostra o erro em vez de um traceback
+            _render_pipeline_error("generate the report (Stage 6)", e)
+        # O valor devolvido é a versão final: inclui os avisos que
+        # generate_summary antepõe (recusa do modelo, molde por preencher), que
+        # o texto recebido em streaming não tem. Usa-se sempre o devolvido e
+        # volta a desenhar-se se for diferente do que foi mostrado ao vivo.
+        if _result_text:
+            if _result_text != st.session_state.streamed_summary:
+                summary_slot.markdown(_result_text)
             st.session_state.streamed_summary = _result_text
-            summary_slot.markdown(_result_text)
         elapsed = round((time.time() - t0) * 1000)
         status.update(
             label=f"**Stage 6/6** — Summary generated ({_fmt_ms(elapsed)})",

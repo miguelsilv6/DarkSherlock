@@ -6,27 +6,12 @@ assim explícito, no histórico, o que mudou e porquê.
 """
 
 import llm
-import scrape
 
 
-def test_scraper_prepends_search_title_to_page_text(fake_session, fake_response):
-    FakeResponse = fake_response
-    # Legado: o título do resultado de pesquisa é anteposto ao texto da página,
-    # pelo que basta o título conter as palavras da query para "passar" a Etapa 5.
-    url = "http://aaaa.onion/p"
-    s = fake_session({url: FakeResponse("<html><body>conteudo da pagina</body></html>")})
-    got_url, text = scrape.scrape_single({"link": url, "title": "LockBit leak"}, session=s)
-    assert got_url == url
-    assert text.startswith("LockBit leak - ")
-    assert "conteudo da pagina" in text
-
-
-def test_scraper_returns_title_as_content_on_http_error(fake_session, fake_response):
-    FakeResponse = fake_response
-    url = "http://bbbb.onion/p"
-    s = fake_session({url: FakeResponse("erro", status_code=503)})
-    _, text = scrape.scrape_single({"link": url, "title": "Titulo do resultado"}, session=s)
-    assert text == "Titulo do resultado"
+# (PR 1) Os dois testes de caracterização do raspador — título anteposto ao
+# texto e título usado como conteúdo em caso de erro — foram substituídos por
+# tests/test_scrape.py: o título já não entra no texto e uma página falhada não
+# produz conteúdo.
 
 
 def test_relevance_filter_keeps_all_when_nothing_matches():

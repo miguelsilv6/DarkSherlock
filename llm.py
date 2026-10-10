@@ -70,6 +70,35 @@ FILTER_INPUT_CAP = 120
 #   "empty_input"       sem resultados à entrada
 last_filter_outcome = None
 
+# Remove blocos de raciocínio que alguns modelos (p. ex. gpt-oss, deepseek-r1 via
+# Ollama) podem incluir no texto da resposta. Sem isto, o raciocínio contamina a
+# query refinada, a leitura dos índices da Etapa 4 e o relatório.
+_RE_THINK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+
+
+def _strip_reasoning(text: str) -> str:
+    text = _RE_THINK.sub("", text or "")
+    # bloco aberto mas não fechado (resposta cortada a meio do raciocínio)
+    i = text.lower().find("<think>")
+    if i != -1:
+        text = text[:i]
+    return text.strip()
+
+
+# Estimativa conservadora de caracteres por token para texto da dark web (hashes,
+# endereços .onion e base64 tokenizam mal). Usada para não exceder o contexto.
+_CHARS_PER_TOKEN = 2.5
+
+
+def _context_budget_chars(llm, fixed_prompt_chars: int, default_ctx: int = 8192, default_out: int = 2048) -> int:
+    """Caracteres de evidência que cabem no contexto do modelo, descontando o prompt fixo e a resposta."""
+    n_ctx = getattr(llm, "n_ctx", None) or getattr(llm, "num_ctx", None) or default_ctx
+    max_out = getattr(llm, "max_tokens", None) or getattr(llm, "num_predict", None) or default_out
+    if not isinstance(max_out, int) or max_out <= 0:
+        max_out = default_out
+    tokens = n_ctx - max_out - fixed_prompt_chars / _CHARS_PER_TOKEN - 200
+    return max(1500, int(tokens * _CHARS_PER_TOKEN))
+
 import warnings
 
 # Suprime avisos de deprecação e avisos internos de bibliotecas de terceiros
@@ -215,7 +244,7 @@ def refine_query(llm, user_input, preset="threat_intel"):
         [("system", system_prompt), ("user", "{query}")]
     )
     chain = prompt_template | llm | StrOutputParser()
-    refined = chain.invoke({"query": user_input}).strip()
+    refined = _strip_reasoning(chain.invoke({"query": user_input}))
     # Salvaguarda: um modelo pequeno pode devolver string vazia ou só
     # pontuação/aspas em vez de keywords. Sem isto, uma query vazia chega
     # ao motor de pesquisa e devolve 0 resultados sem explicação visível.
@@ -295,14 +324,14 @@ def filter_results(llm, query, results):
     )
     chain = prompt_template | llm | StrOutputParser()
     try:
-        result_indices = chain.invoke({"query": query, "results": final_str})
+        result_indices = _strip_reasoning(chain.invoke({"query": query, "results": final_str}))
     except Exception as e:
         # Se o payload for demasiado grande (rate limit, context overflow),
         # tenta novamente com versão truncada (sem links, títulos a 30 chars).
         logger.warning("Filter LLM call falhou (%s) — a retry com payload truncado.", e)
         final_str = _generate_final_string(results, truncate=True)
         try:
-            result_indices = chain.invoke({"query": query, "results": final_str})
+            result_indices = _strip_reasoning(chain.invoke({"query": query, "results": final_str}))
         except Exception as e2:
             # Se o retry também falhar, devolve top-20 sem ranking LLM em vez
             # de partir o pipeline inteiro — o filtro de relevância pós-scrape
@@ -814,12 +843,19 @@ def generate_summary(
     # a iteração tal-qual: fontes mais relevantes primeiro (já ordenadas
     # por filter_results), corte global quando max_total_chars é atingido.
     if isinstance(content, dict):
+        # Não exceder o contexto do modelo: o limite efetivo é o menor entre
+        # max_total_chars e o que cabe depois do prompt fixo e da resposta.
+        fixed_chars = len(system_prompt) + len(_OUTPUT_FORMAT) + 1500
+        budget = min(max_total_chars, _context_budget_chars(llm, fixed_chars))
+        if budget < max_total_chars:
+            logger.info("generate_summary: evidência limitada a %d caracteres pelo contexto do modelo.", budget)
         truncated = {}
         total = 0
         for url, text in content.items():
-            if total >= max_total_chars:
+            remaining = budget - total
+            if remaining <= 0:
                 break
-            chunk = text[:per_source_limit]
+            chunk = text[:min(per_source_limit, remaining)]
             truncated[url] = chunk
             total += len(chunk)
         content = _format_content_for_llm(truncated)
@@ -854,7 +890,7 @@ Produz a análise forense agora. Responde APENAS em Português de Portugal."""
         [("system", system_prompt), ("user", "{user_input}")]
     )
     chain = prompt_template | llm | StrOutputParser()
-    result = chain.invoke({"user_input": user_message})
+    result = _strip_reasoning(chain.invoke({"user_input": user_message}))
     result = _flag_refusal(result)
     return _flag_scaffold_echo(result)
 

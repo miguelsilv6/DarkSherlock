@@ -31,18 +31,21 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 # ("1.0-legacy" = pipeline anterior à revisão geral de outubro de 2026).
 PIPELINE_VERSION = "1.0-legacy"
 
-# Parâmetros de inferência dos modelos Ollama (opcionais). Por omissão não se
-# passa nada e vale o que o servidor Ollama definir (num_ctx pequeno, p.ex.).
-# Para replicar os modelos embutidos (n_ctx 8192, max_tokens 2048,
-# repeat_penalty 1.1 — ver local_models.py), definir:
-#   OLLAMA_NUM_CTX=8192  OLLAMA_NUM_PREDICT=2048  OLLAMA_REPEAT_PENALTY=1.1
+# Parâmetros de inferência dos modelos Ollama. num_ctx tem omissão 8192 (ver
+# abaixo); os restantes só se passam se definidos. Para replicar por completo os
+# modelos embutidos (n_ctx 8192, max_tokens 2048, repeat_penalty 1.1 — ver
+# local_models.py), definir também:
+#   OLLAMA_NUM_PREDICT=2048  OLLAMA_REPEAT_PENALTY=1.1
 # OLLAMA_SEED fixa a semente (reprodutibilidade).
 def _env_number(name: str, cast):
     raw = os.getenv(name, "").strip()
     return cast(raw) if raw else None
 
 
-OLLAMA_NUM_CTX = _env_number("OLLAMA_NUM_CTX", int)
+# num_ctx: por omissão 8192 (igual aos modelos embutidos). Sem isto o Ollama usa o
+# seu contexto por omissão (2048–4096 conforme a versão) e corta o prompt das
+# Etapas 4 e 6 sem avisar. Para modelos com mais contexto, definir OLLAMA_NUM_CTX.
+OLLAMA_NUM_CTX = _env_number("OLLAMA_NUM_CTX", int) or 8192
 OLLAMA_NUM_PREDICT = _env_number("OLLAMA_NUM_PREDICT", int)
 OLLAMA_REPEAT_PENALTY = _env_number("OLLAMA_REPEAT_PENALTY", float)
 OLLAMA_SEED = _env_number("OLLAMA_SEED", int)

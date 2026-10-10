@@ -38,6 +38,7 @@ import csv
 import json
 import logging
 import statistics
+from collections import Counter
 import subprocess
 import sys
 import time
@@ -200,6 +201,7 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
     t0 = time.time()
     scraped = scrape_multiple(filtered, max_workers=THREADS)
     safety_blocked = scrape_module.last_blocked_count
+    scrape_outcomes = dict(Counter(d.get("status", "?") for d in scrape_module.last_details.values()))
     meaningful = {u: c for u, c in scraped.items() if len(c) > 150}
     pre_relevance = len(meaningful)
     meaningful = filter_scraped_by_relevance(query, meaningful)
@@ -238,6 +240,8 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         "stage4_outcome": stage4_outcome,
         # N.º de URLs do Top-K que a salvaguarda ética (safety.py) impediu de pedir.
         "safety_blocked": safety_blocked,
+        # Desfecho do pedido de cada página do Top-K (ok, http_error, timeout, ...).
+        "scrape_outcomes": scrape_outcomes,
         "summary": summary,
         "integrity": integrity,
         # Conteúdo bruto por fonte, tal como foi passado a compute_integrity_hashes()

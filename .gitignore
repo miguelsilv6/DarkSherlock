@@ -206,3 +206,6 @@ evaluation/baseline_manual/.timer_state.json
 
 # EQ-02/EQ-03: folhas de revisão e resultados do pooling (contêm URLs .onion recuperadas)
 evaluation/ground_truth/
+
+# Registo de URLs bloqueados pela salvaguarda ética (para denúncia; nunca versionar)
+referrals/
