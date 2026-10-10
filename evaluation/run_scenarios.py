@@ -52,6 +52,7 @@ from llm import (
     filter_scraped_by_relevance,
 )
 import llm as llm_module
+import scrape as scrape_module
 from llm_utils import get_model_choices
 from search import get_search_results
 from scrape import scrape_multiple
@@ -197,6 +198,7 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
     # Etapa 5 — Scraping + filtro de relevância pós-scrape
     t0 = time.time()
     scraped = scrape_multiple(filtered, max_workers=THREADS)
+    safety_blocked = scrape_module.last_blocked_count
     meaningful = {u: c for u, c in scraped.items() if len(c) > 150}
     pre_relevance = len(meaningful)
     meaningful = filter_scraped_by_relevance(query, meaningful)
@@ -232,6 +234,8 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         # Como terminou a Etapa 4 ("ranked", "none_keyword", "parse_fallback", ...):
         # só "ranked" é um ranking do LLM (EQ-03).
         "stage4_outcome": stage4_outcome,
+        # N.º de URLs do Top-K que a salvaguarda ética (safety.py) impediu de pedir.
+        "safety_blocked": safety_blocked,
         "summary": summary,
         "integrity": integrity,
         # Conteúdo bruto por fonte, tal como foi passado a compute_integrity_hashes()
@@ -275,6 +279,7 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         "audit_id": audit_id,
         "investigation_file": inv_fname,
         "stage4_outcome": stage4_outcome,
+        "safety_blocked": safety_blocked,
         "results_found": len(results),
         "results_filtered": len(filtered),
         "results_pre_relevance": pre_relevance,

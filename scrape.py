@@ -25,9 +25,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import warnings
 
+import safety
+
 # Logger deste módulo — permite rastrear falhas de scraping por URL
 # sem interromper o pipeline (nível DEBUG por omissão).
 logger = logging.getLogger(__name__)
+
+# N.º de URLs que a salvaguarda ética impediu na última chamada a scrape_multiple (diagnóstico/avaliação).
+last_blocked_count = 0
 # Suprime avisos de SSL e outros avisos não críticos do urllib3/requests
 # que surgem frequentemente ao lidar com certificados em sites .onion ou
 # configurações de proxy não convencionais.
@@ -308,6 +313,15 @@ def scrape_multiple(urls_data, max_workers=5):
     """
     results = {}
     max_chars = 2000  # Limite máximo de caracteres por URL para proteger a janela de contexto do LLM
+
+    # Salvaguarda ética (ver safety.py): URLs cujo título/URL indique conteúdo
+    # de abuso sexual de menores nunca são pedidos. Só se regista o n.º de
+    # bloqueios e o padrão que casou, nunca o título.
+    global last_blocked_count
+    urls_data, blocked = safety.split_blocked(list(urls_data))
+    last_blocked_count = len(blocked)
+    for _item, pattern in blocked:
+        logger.warning("Salvaguarda ética: um URL não foi pedido (padrão: %s).", pattern)
 
     # Cria UMA sessão Tor partilhada por todos os workers do pool.
     # Sem esta optimização, cada worker chamaria get_tor_session() internamente,
