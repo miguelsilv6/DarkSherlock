@@ -20,6 +20,8 @@ import re
 import sys
 from pathlib import Path
 
+import versions
+
 SCENARIOS = [f"{d}{n}" for d in "ABCD" for n in "123"]
 
 
@@ -29,6 +31,7 @@ def main() -> int:
     ap.add_argument("--since", default="00000000", help="Só ficheiros com data >= AAAAMMDD.")
     ap.add_argument("--dir", default=str(Path(__file__).resolve().parent.parent / "investigations"))
     ap.add_argument("--expected", type=int, default=3, help="Execuções esperadas por cenário (default: 3).")
+    versions.add_argument(ap)
     args = ap.parse_args()
 
     runs: dict[str, list[dict]] = collections.defaultdict(list)
@@ -40,8 +43,9 @@ def main() -> int:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if data.get("model") == args.model and data.get("scenario_id"):
+        if data.get("model") == args.model and data.get("scenario_id") and versions.keep(data, args.pipeline_version):
             runs[data["scenario_id"]].append(data)
+    versions.exit_if_mixed([d for rs in runs.values() for d in rs], args.pipeline_version)
 
     if not runs:
         print(f"Nenhuma execução de {args.model!r} desde {args.since} em {args.dir}.")

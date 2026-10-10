@@ -78,6 +78,8 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import versions
+
 DOMAINS = {
     "A": "Threat Intel",
     "B": "Ransomware/Malware",
@@ -186,12 +188,14 @@ def _file_date(path: str) -> str:
     return m.group(1) if m else ""
 
 
-def load_darksherlock_runs(pattern: str, scenario: str, model: str | None = None, since: str = "00000000") -> list[dict]:
+def load_darksherlock_runs(pattern: str, scenario: str, model: str | None = None, since: str = "00000000",
+                           pipeline_version: str | None = None) -> list[dict]:
     """Uma entrada por execução do DarkSherlock do cenário: retrieved, top20 (LLM), first20, found_by.
 
-    model: só execuções deste modelo (campo "model" da investigação); since: AAAAMMDD mínimo no nome do ficheiro.
+    model: só execuções deste modelo (campo "model" da investigação); since: AAAAMMDD mínimo no nome do ficheiro;
+    pipeline_version: só execuções desta versão (ver versions.py) — sem ela, ValueError se houver mistura.
     """
-    runs, skipped = [], 0
+    runs, skipped, invs = [], 0, []
     for path in sorted(glob.glob(pattern)):
         if since != "00000000" and _file_date(path) < since:
             continue
@@ -202,6 +206,8 @@ def load_darksherlock_runs(pattern: str, scenario: str, model: str | None = None
         if data.get("scenario_id") != scenario:
             continue
         if model is not None and data.get("model") != model:
+            continue
+        if not versions.keep(data, pipeline_version):
             continue
         if "search_results" not in data:
             skipped += 1
@@ -219,7 +225,12 @@ def load_darksherlock_runs(pattern: str, scenario: str, model: str | None = None
             "file": Path(path).name, "retrieved": retrieved, "top20": top20,
             "first20": retrieved[:TOP_K], "found_by": found_by, "titles": titles,
             "stage4_outcome": data.get("stage4_outcome", "desconhecido"),
+            "pipeline_version": versions.version_of(data),
         })
+        invs.append(data)
+    mixed = versions.mixed_error(invs, pipeline_version)
+    if mixed:
+        raise ValueError(f"{scenario}: {mixed}")
     if skipped:
         print(f"AVISO [{scenario}]: {skipped} investigação(ões) sem 'search_results' (anteriores ao campo) ignorada(s).")
     return runs
@@ -250,7 +261,11 @@ def load_manual(path: Path) -> dict | None:
 # ---------------------------------------------------------------------------
 def cmd_build(args) -> int:
     scenario = args.scenario.upper()
-    runs = load_darksherlock_runs(args.darksherlock, scenario, args.model, args.since)
+    try:
+        runs = load_darksherlock_runs(args.darksherlock, scenario, args.model, args.since, args.pipeline_version)
+    except ValueError as e:
+        print(f"ERRO: {e}")
+        return 2
     manual = load_manual(Path(args.manual))
     if not runs:
         print(f"ERRO: nenhuma investigação do DarkSherlock com 'search_results' para {scenario} em {args.darksherlock}"
@@ -385,11 +400,12 @@ def resolve_labels(scenario: str, gt_dir: Path, allow_unresolved: bool) -> tuple
 
 
 def analyze_scenario(scenario: str, gt_dir: Path, investigations: str, manual_dir: Path, allow_unresolved: bool,
-                     allow_unlabeled: bool, model: str | None = None, since: str = "00000000") -> dict:
+                     allow_unlabeled: bool, model: str | None = None, since: str = "00000000",
+                     pipeline_version: str | None = None) -> dict:
     final, pairs, unresolved, n_prelabeled = resolve_labels(scenario, gt_dir, allow_unresolved)
     relevant = {u for u, l in final.items() if l == "relevant"}
     inaccessible = {u for u, l in final.items() if l == "inaccessible"}
-    runs = load_darksherlock_runs(investigations, scenario, model, since)
+    runs = load_darksherlock_runs(investigations, scenario, model, since, pipeline_version)
     manual = load_manual(manual_dir / f"manual_sources_{scenario}.csv")
     if not runs:
         raise ValueError(f"{scenario}: nenhuma execução do DarkSherlock com 'search_results'.")
@@ -550,7 +566,8 @@ def cmd_analyze(args) -> int:
     for sc in scenarios:
         try:
             results.append(analyze_scenario(sc, gt_dir, args.investigations, Path(args.manual_dir),
-                                            args.allow_unresolved, args.allow_unlabeled, args.model, args.since))
+                                            args.allow_unresolved, args.allow_unlabeled, args.model, args.since,
+                                            args.pipeline_version))
         except (ValueError, FileNotFoundError) as e:
             print(f"ERRO [{sc}]: {e}")
             errors += 1
@@ -585,6 +602,7 @@ def main() -> int:
     b.add_argument("--seed", type=int, default=42, help="Semente da ordem aleatória das folhas (default: 42).")
     b.add_argument("--model", default=None, help="Só execuções deste modelo (etiqueta exata). Recomendado.")
     b.add_argument("--since", default="00000000", help="Só execuções com data de ficheiro >= AAAAMMDD.")
+    versions.add_argument(b)
     b.add_argument("--prelabel-regex", default=None,
                    help="Expressão (sobre o URL) das fontes a marcar como não relevantes sem revisão humana.")
     b.set_defaults(func=cmd_build)
@@ -595,6 +613,7 @@ def main() -> int:
     a.add_argument("--manual-dir", required=True, help="Diretório com manual_sources_<ID>.csv.")
     a.add_argument("--model", default=None, help="Só execuções deste modelo (etiqueta exata). Recomendado.")
     a.add_argument("--since", default="00000000", help="Só execuções com data de ficheiro >= AAAAMMDD.")
+    versions.add_argument(a)
     a.add_argument("--scenarios", default=None, help="IDs separados por vírgula (default: todos com folhas).")
     a.add_argument("--out", default=None)
     a.add_argument("--allow-unresolved", action="store_true", help="Exclui discordâncias sem rótulo final em vez de falhar.")

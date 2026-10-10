@@ -3,9 +3,8 @@ evaluation/run_refusal_ablation.py — Protocolo ablativo de mitigação de
 recusas do EQ-07 (Capítulo 6, secção 6.4.7).
 
 Cada cenário é executado numa única passagem pelas etapas 2-5 do pipeline
-(refine_query, get_search_results, filter_results, scrape_multiple,
-filter_scraped_by_relevance) — reutilizadas tal-qual de run_scenarios.py,
-sem duplicar lógica — e o conteúdo scrapeado resultante é depois passado a
+(pipeline.stage_refine/search/filter/scrape — as mesmas funções da app e de
+run_scenarios.py, sem duplicar lógica) — e o conteúdo scrapeado resultante é depois passado a
 generate_summary() QUATRO vezes, uma por variante de mitigação:
 
     (i)   baseline      — sem persona, sem autorização, sem anti-recusa
@@ -52,8 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import run_scenarios as base  # noqa: E402
 import llm  # noqa: E402
 from llm_utils import get_model_choices  # noqa: E402
-from search import get_search_results  # noqa: E402
-from scrape import scrape_multiple  # noqa: E402
+import pipeline  # noqa: E402
 from audit import setup_file_logging  # noqa: E402
 
 # Slug seguro para nomes de ficheiro a partir do label do modelo (que contém
@@ -90,18 +88,13 @@ class _RefusalCapture(logging.Handler):
 
 
 def _prepare_content(scenario: dict, llm_instance) -> tuple[str, dict]:
-    """Corre as etapas 2-5 do pipeline uma única vez, devolve (refined_query, meaningful)."""
-    refined = llm.refine_query(llm_instance, scenario["query"], preset=scenario["preset"])
-    results, _engine_status = get_search_results(refined, max_workers=base.THREADS)
-    if len(results) > base.MAX_RESULTS:
-        results = results[:base.MAX_RESULTS]
-    filtered = llm.filter_results(llm_instance, scenario["query"], results)  # query original, como no pipeline
-    if len(filtered) > base.MAX_SCRAPE:
-        filtered = filtered[:base.MAX_SCRAPE]
-    scraped = scrape_multiple(filtered, max_workers=base.THREADS)
-    meaningful = {u: c for u, c in scraped.items() if len(c) > 150}
-    meaningful = llm.filter_scraped_by_relevance(scenario["query"], meaningful)
-    return refined, meaningful
+    """Corre as etapas 2-5 do pipeline uma única vez (pipeline.py), devolve (refined_query, evidência)."""
+    r = pipeline.PipelineResult(query=scenario["query"], preset=scenario["preset"])
+    pipeline.stage_refine(r, llm_instance)
+    pipeline.stage_search(r, base.MAX_RESULTS, base.THREADS)
+    pipeline.stage_filter(r, llm_instance, base.MAX_SCRAPE)
+    pipeline.stage_scrape(r, base.THREADS)
+    return r.refined_query, r.scraped_content
 
 
 def run_one_ablation(scenario: dict, model_choice: str, llm_instance, out_dir: Path) -> list[dict]:

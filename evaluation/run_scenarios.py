@@ -11,11 +11,10 @@ Empírica) contra o pipeline real do DarkSherlock, 3 vezes cada, e produz:
   4. Uma tabela Markdown pronta a colar na Tabela 13 (Eficiência Operacional)
      do relatório: média e desvio padrão do tempo end-to-end por cenário.
 
-Não altera nem duplica a lógica do pipeline: chama exatamente as mesmas
-funções que Home.py invoca (get_llm, refine_query, get_search_results,
-filter_results, scrape_multiple, filter_scraped_by_relevance,
-generate_summary, compute_integrity_hashes), para que os números recolhidos
-sejam representativos do comportamento real da app, não de uma reimplementação.
+Não altera nem duplica a lógica do pipeline: chama pipeline.run_pipeline,
+as mesmas funções que a Home e a Investigation usam (pipeline.py), para que
+os números recolhidos sejam representativos do comportamento real da app,
+não de uma reimplementação. Cada investigação grava "pipeline_version".
 
 Pré-requisitos:
   - Tor a correr em 127.0.0.1:9050 (obrigatório — sem Tor, Stage 3/5 falham
@@ -35,32 +34,19 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import logging
 import statistics
-from collections import Counter
 import subprocess
 import sys
 import time
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from llm import (
-    get_llm, refine_query, filter_results, generate_summary,
-    filter_scraped_by_relevance,
-)
-import llm as llm_module
-from config import PIPELINE_VERSION
-import scrape as scrape_module
-import search as search_module
+from llm import get_llm
+import pipeline
 from llm_utils import get_model_choices
-from search import get_search_results
-from scrape import scrape_multiple
-from report import compute_integrity_hashes
-from engine_manager import get_active_engines
 from audit import log_investigation, setup_file_logging
 
 logger = logging.getLogger(__name__)
@@ -164,149 +150,50 @@ def ensure_tor(max_wait_s: int = 60, poll_interval_s: int = 3) -> tuple[bool, bo
 
 
 def run_one(scenario: dict, model_choice: str, llm) -> dict:
-    """Executa o pipeline completo para um cenário e devolve métricas + artefactos."""
-    audit_id = str(uuid.uuid4())
-    query = scenario["query"]
-    preset = scenario["preset"]
-    timings_ms: dict[str, int] = {}
-    errors: list[str] = []
-    t_start = time.time()
+    """Executa o pipeline completo para um cenário e devolve métricas + artefactos.
 
-    # Etapa 2 — Refinamento de query (Etapa 1/Load LLM já ocorreu antes do loop,
-    # e é amortizada — ver nota no __main__ sobre reutilização do mesmo LLM
-    # nas 3 execuções, replicando o comportamento real da app numa sessão).
-    t0 = time.time()
-    refined = refine_query(llm, query, preset=preset)
-    timings_ms["refine_query"] = round((time.time() - t0) * 1000)
+    Usa pipeline.run_pipeline — as mesmas funções que a Home e a Investigation
+    chamam —, com os limites fixos acima (independentes das definições da UI).
+    O LLM já carregado (Etapa 1) é reutilizado nas 3 execuções, como numa sessão da app.
+    """
+    try:
+        r = pipeline.run_pipeline(
+            scenario["query"], scenario["preset"], llm, model=model_choice,
+            max_results=MAX_RESULTS, max_scrape=MAX_SCRAPE, threads=THREADS,
+        )
+    except pipeline.PipelineError as e:
+        # Grava o que foi feito até à falha (para diagnóstico) e propaga.
+        _save(scenario, e.result)
+        raise
 
-    # Etapa 3 — Pesquisa via Tor
-    t0 = time.time()
-    active_engines = [e["name"] for e in get_active_engines()]
-    results, engine_status = get_search_results(refined, max_workers=THREADS)
-    search_stats = dict(search_module.last_search_stats)
-    if len(results) > MAX_RESULTS:
-        results = results[:MAX_RESULTS]
-    retrieved_at = datetime.now(timezone.utc).isoformat()
-    for r in results:
-        r["retrieved_at_utc"] = retrieved_at
-    timings_ms["search"] = round((time.time() - t0) * 1000)
-
-    # Etapa 4 — Filtragem por relevância (LLM)
-    t0 = time.time()
-    filtered = filter_results(llm, query, results)  # Etapas 4–6 usam a query original
-    stage4_outcome = llm_module.last_filter_outcome
-    if len(filtered) > MAX_SCRAPE:
-        filtered = filtered[:MAX_SCRAPE]
-    timings_ms["filter_results"] = round((time.time() - t0) * 1000)
-
-    # Etapa 5 — Scraping + filtro de relevância pós-scrape
-    t0 = time.time()
-    scraped = scrape_multiple(filtered, max_workers=THREADS)
-    safety_blocked = scrape_module.last_blocked_count
-    scrape_outcomes = dict(Counter(d.get("status", "?") for d in scrape_module.last_details.values()))
-    meaningful = {u: c for u, c in scraped.items() if len(c) > 150}
-    pre_relevance = len(meaningful)
-    meaningful = filter_scraped_by_relevance(query, meaningful)
-    stage5_outcome = llm_module.last_relevance_outcome
-    relevance_scores = dict(llm_module.last_relevance_scores)
-    scraped_at = datetime.now(timezone.utc).isoformat()
-    for item in filtered:
-        if item.get("link", "") in meaningful:
-            item["scraped_at_utc"] = scraped_at
-    integrity = compute_integrity_hashes(meaningful)
-    timings_ms["scrape"] = round((time.time() - t0) * 1000)
-
-    # Etapa 6 — Geração do relatório
-    t0 = time.time()
-    summary = generate_summary(llm, query, meaningful, preset=preset)
-    timings_ms["generate_summary"] = round((time.time() - t0) * 1000)
-
-    total_ms = round((time.time() - t_start) * 1000)
-
-    # Persistência: mesmo formato que Home.py grava, para poder ser
-    # recarregado na app e incluído no PDF/JSON usados na revisão cega (EQ-04).
-    INVESTIGATIONS_DIR.mkdir(exist_ok=True)
-    inv_data = {
-        "audit_id": audit_id,
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "query": query,
-        "refined_query": refined,
-        "model": model_choice,
-        "pipeline_version": PIPELINE_VERSION,
-        "preset": preset,
-        "active_engines": active_engines,
-        "sources": filtered,
-        # Lista completa de fontes recuperadas (antes do filtro por LLM), cada
-        # uma com "found_by": base do recall e dos motores produtivos de EQ-02.
-        "search_results": results,
-        # Como terminou a Etapa 4 ("ranked", "none_keyword", "parse_fallback", ...):
-        # só "ranked" é um ranking do LLM (EQ-03).
-        "stage4_outcome": stage4_outcome,
-        # N.º de URLs do Top-K que a salvaguarda ética (safety.py) impediu de pedir.
-        "safety_blocked": safety_blocked,
-        # Etapa 5: "kept" / "empty" / "no_terms" e pontuação de cada fonte raspada.
-        "stage5_outcome": stage5_outcome,
-        "relevance_scores": relevance_scores,
-        # Desfecho do pedido de cada página do Top-K (ok, http_error, timeout, ...).
-        "scrape_outcomes": scrape_outcomes,
-        "summary": summary,
-        "integrity": integrity,
-        # Conteúdo bruto por fonte, tal como foi passado a compute_integrity_hashes()
-        # — sem isto os hashes em "integrity" não seriam verificáveis depois
-        # (mesmo esquema usado por Home.py/save_investigation, para EQ-05.2
-        # do Capítulo 6 poder recalcular e comparar).
-        "scraped_content": meaningful,
-        # Estado por motor de pesquisa ("ok"/"failed") desta execução — EQ-06
-        # (Capítulo 6, secção 6.4.6, "Tolerância a motores caídos").
-        "engine_status": engine_status,
-        # Por motor: desfecho (ok_results, nav_only, not_results_page, ...) e quantos
-        # resultados foram descartados como navegação, páginas de motores ou spam.
-        "search_stats": search_stats,
-        "scenario_id": scenario["id"],   # extra: rastreável ao cenário do Cap. 6
-        "domain": scenario["domain"],
-    }
-    inv_fname = f"eval_{scenario['id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    (INVESTIGATIONS_DIR / inv_fname).write_text(
-        json.dumps(inv_data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-    # Audit trail — mesma função que a app usa
-    log_investigation({
-        "audit_id": audit_id,
-        "query": query,
-        "refined_query": refined,
-        "model": model_choice,
-        "preset": preset,
-        "engines_active": active_engines,
-        "results_found": len(results),
-        "results_filtered": len(filtered),
-        "results_scraped": len(meaningful),
-        "summary_length_chars": len(summary),
-        "pipeline_duration_ms": total_ms,
-        "errors": errors,
-        "scenario_id": scenario["id"],
-        "engines_attempted": len(engine_status),
-        "engines_failed": sum(1 for v in engine_status.values() if v == "failed"),
-    })
+    inv_fname = _save(scenario, r)
+    log_investigation(pipeline.audit_record(r, scenario_id=scenario["id"]))
 
     return {
         "scenario_id": scenario["id"],
         "domain": scenario["domain"],
-        "audit_id": audit_id,
+        "audit_id": r.audit_id,
         "investigation_file": inv_fname,
-        "stage4_outcome": stage4_outcome,
-        "stage5_outcome": stage5_outcome,
-        "safety_blocked": safety_blocked,
-        "results_found": len(results),
-        "results_filtered": len(filtered),
-        "results_pre_relevance": pre_relevance,
-        "results_scraped": len(meaningful),
-        "summary_length_chars": len(summary),
-        "total_ms": total_ms,
-        "engines_attempted": len(engine_status),
-        "engines_failed": sum(1 for v in engine_status.values() if v == "failed"),
-        **{f"{k}_ms": v for k, v in timings_ms.items()},
+        "stage4_outcome": r.stage4_outcome,
+        "stage5_outcome": r.stage5_outcome,
+        "safety_blocked": r.safety_blocked,
+        "results_found": len(r.search_results),
+        "results_filtered": len(r.filtered),
+        "results_pre_relevance": r.pages_valid,
+        "results_scraped": len(r.scraped_content),
+        "summary_length_chars": len(r.summary),
+        "total_ms": r.total_ms,
+        "engines_attempted": len(r.engine_status),
+        "engines_failed": sum(1 for v in r.engine_status.values() if v == "failed"),
+        **{f"{k}_ms": r.timings_ms.get(k, 0) for k in ("refine_query", "search", "filter_results",
+                                                     "scrape", "generate_summary")},
     }
+
+
+def _save(scenario: dict, r: "pipeline.PipelineResult") -> str:
+    """JSON da investigação no formato da app (recarregável na Home), com o cenário do Cap. 6."""
+    record = pipeline.investigation_record(r, scenario_id=scenario["id"], domain=scenario["domain"])
+    return pipeline.save_investigation(record, INVESTIGATIONS_DIR, prefix=f"eval_{scenario['id']}")
 
 
 def main():

@@ -28,8 +28,11 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # Versão do pipeline de investigação, gravada em cada investigação. Permite
 # separar, na avaliação, resultados obtidos com versões diferentes do código
-# ("1.0-legacy" = pipeline anterior à revisão geral de outubro de 2026).
-PIPELINE_VERSION = "1.0-legacy"
+# ("1.0-legacy" = pipeline anterior à revisão geral de outubro de 2026; as
+# investigações sem este campo são dessa versão. "2.0" = pipeline revisto:
+# pesquisa limpa, relevância sobre o texto integral, relatório fundamentado,
+# pipeline único em pipeline.py).
+PIPELINE_VERSION = "2.0"
 
 # Parâmetros de inferência dos modelos Ollama. num_ctx tem omissão 8192 (ver
 # abaixo); os restantes só se passam se definidos. Para replicar por completo os

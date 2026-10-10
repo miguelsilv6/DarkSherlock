@@ -68,6 +68,8 @@ import statistics
 import sys
 from pathlib import Path
 
+import versions
+
 DIMENSIONS = ["correcao_tecnica", "auditabilidade", "utilidade_operacional", "ausencia_alucinacoes"]
 DIM_LABELS = {
     "correcao_tecnica": "Correção técnica",
@@ -256,7 +258,9 @@ def _file_stamp(path: str) -> str:
     return f"{m.group(1)}{m.group(2)}" if m else ""
 
 
-def pick_darksherlock_runs(pattern: str, model: str, since: str, rule: str) -> dict[str, dict]:
+def pick_darksherlock_runs(pattern: str, model: str, since: str, rule: str,
+                           pipeline_version: str | None = None) -> dict[str, dict]:
+    """Uma execução por cenário (regra `rule`). ValueError se misturarem versões do pipeline sem escolha."""
     runs: dict[str, list[tuple[str, dict]]] = {}
     for path in sorted(glob.glob(pattern)):
         stamp = _file_stamp(path)
@@ -268,7 +272,12 @@ def pick_darksherlock_runs(pattern: str, model: str, since: str, rule: str) -> d
             continue
         if data.get("model") != model or data.get("scenario_id") not in SCENARIO_IDS or not data.get("summary"):
             continue
+        if not versions.keep(data, pipeline_version):
+            continue
         runs.setdefault(data["scenario_id"], []).append((path, data))
+    mixed = versions.mixed_error([d for items in runs.values() for _, d in items], pipeline_version)
+    if mixed:
+        raise ValueError(mixed)
     chosen = {}
     for sc, items in runs.items():
         items.sort(key=lambda it: _file_stamp(it[0]))
@@ -350,7 +359,12 @@ def cmd_build(args) -> int:
               "já preenchidas; usa --force se é isso mesmo que queres.")
         return 1
 
-    ds = pick_darksherlock_runs(args.investigations, args.model, args.since, args.run_rule)
+    try:
+        ds = pick_darksherlock_runs(args.investigations, args.model, args.since, args.run_rule,
+                                    args.pipeline_version)
+    except ValueError as e:
+        print(f"ERRO: {e}")
+        return 2
     manual_dir = Path(args.manual_dir)
     items, problems = [], []
     for sc in SCENARIO_IDS:
@@ -401,6 +415,7 @@ def cmd_build(args) -> int:
     (out / "private").mkdir(parents=True, exist_ok=True)
     (out / "private" / "key.json").write_text(
         json.dumps({"seed": args.seed, "model": args.model, "run_rule": args.run_rule, "since": args.since,
+                    "pipeline_versions": sorted({versions.version_of(c["data"]) for c in ds.values()}),
                     "reports": key}, ensure_ascii=False, indent=2), encoding="utf-8")
 
     rubric_txt = "\n".join(f"- **{DIM_LABELS[d]}** (`{d}`): {RUBRIC[d]}" for d in DIMENSIONS)
@@ -677,6 +692,7 @@ def main() -> int:
     b.add_argument("--investigations", required=True, help='Glob das investigações (ex.: "investigations/eval_*.json").')
     b.add_argument("--model", required=True, help="Etiqueta exata do modelo cujas execuções entram na EQ-04.")
     b.add_argument("--since", default="00000000", help="Só execuções com data de ficheiro >= AAAAMMDD.")
+    versions.add_argument(b)
     b.add_argument("--run-rule", choices=["first", "median_sources"], default="first",
                    help="Execução por cenário: a primeira (por data) ou a mediana do n.º de fontes finais.")
     b.add_argument("--manual-dir", default=str(Path(__file__).resolve().parent / "baseline_manual"))

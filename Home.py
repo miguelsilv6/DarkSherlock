@@ -24,24 +24,16 @@ Dependências principais:
     - Tor proxy  : necessário para aceder a domínios .onion.
 """
 
-import base64
 import json
-import os
 import re
-import time
-import uuid
 import streamlit as st
-import scrape as scrape_module
-from collections import Counter
+import pipeline
 import settings_state
 from datetime import datetime, timezone
 from pathlib import Path
-from scrape import scrape_multiple
-from search import get_search_results
-from llm_utils import BufferedStreamingHandler, get_model_choices
-from llm import get_llm, refine_query, filter_results, generate_summary, filter_scraped_by_relevance, PRESET_PROMPTS
-from engine_manager import get_active_engines
-from report import compute_integrity_hashes, generate_forensic_pdf, investigation_pdf_data
+from llm_utils import get_model_choices
+from report import generate_forensic_pdf, investigation_pdf_data
+from ui_pipeline import complete_dict, run_with_ui
 from audit import log_investigation, setup_file_logging
 
 # Configura o logging para ficheiro (captura debug/info de todos os módulos)
@@ -180,9 +172,9 @@ def _render_pipeline_result(
         pc: dict com chaves audit_id, query, refined, model, preset_label,
             filtered, results_count, scraped_count, summary, integrity,
             active_engines.
-        findings_container: opcional. Se passado, o markdown do summary é
-            escrito dentro deste container (útil quando há um `st.empty()`
-            partilhado com o streaming handler). Senão, renderiza inline.
+        findings_container: opcional. Se passado, o relatório já está nesse
+            container (escrito durante o streaming) e não é repetido. Senão,
+            renderiza-o inline.
         download_key_prefix: prefixo para as `key=` dos download buttons,
             necessário para evitar colisão entre múltiplas renderizações.
     """
@@ -201,8 +193,9 @@ def _render_pipeline_result(
 
     # --- Findings (markdown) ---
     if findings_container is not None:
+        # O relatório já foi escrito neste container durante o streaming (com o
+        # texto final); voltar a escrevê-lo aqui duplicava-o no ecrã.
         with findings_container:
-            st.markdown(pc["summary"])
             st.divider()
     else:
         st.subheader(":red[Findings]", anchor=None, divider="gray")
@@ -256,86 +249,6 @@ def _render_pipeline_result(
 INVESTIGATIONS_DIR = Path("investigations")
 
 
-def save_investigation(
-    query: str,
-    refined_query: str,
-    model: str,
-    preset_label: str,
-    sources: list,
-    summary: str,
-    audit_id: str = "",
-    active_engines: list = None,
-    integrity: dict = None,
-    scraped_content: dict = None,
-    engine_status: dict = None,
-    search_results: list = None,
-    timestamp_utc: str = None,
-) -> str:
-    """Guarda uma investigação completa em disco no formato JSON. Retorna o nome do ficheiro.
-
-    Para além dos dados da investigação, guarda campos forenses:
-    - audit_id: identificador único UUID4 para rastreabilidade
-    - timestamp_utc: timestamp em UTC para correlação temporal
-    - active_engines: engines utilizadas na pesquisa
-    - integrity: hashes SHA-256 por fonte e hash global (cadeia de custódia)
-    - scraped_content: texto scrapeado {url: conteúdo} tal como foi hashado.
-      Sem isto, os hashes em `integrity` seriam uma promessa vazia — nada
-      para recalcular e comparar mais tarde, o que invalida a própria ideia
-      de cadeia de custódia (o conteúdo que gerou o hash tem de sobreviver
-      ao fim da sessão Streamlit, não só o hash em si).
-    - engine_status: {nome_do_motor: "ok"|"failed"} desta execução — usado
-      na métrica de resiliência EQ-06 (Capítulo 6, secção 6.4.6).
-    - search_results: lista completa de fontes recuperadas pela pesquisa (antes
-      do filtro por LLM), cada uma com "found_by" (motores que a devolveram).
-      "sources" só guarda a lista já filtrada (até 20); sem a lista completa
-      não é possível medir o recall de recuperação nem os motores produtivos
-      do EQ-02 (Capítulo 6, secção 6.4.2).
-    """
-    INVESTIGATIONS_DIR.mkdir(exist_ok=True)
-    # chmod 700: investigações contêm conteúdo dark web sensível (IOCs, PII,
-    # URLs .onion). Restrição a u=rwx evita leitura por outros utilizadores
-    # no mesmo host. No-op em Windows.
-    try:
-        os.chmod(INVESTIGATIONS_DIR, 0o700)
-    except OSError:
-        pass
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fname = f"investigation_{timestamp}.json"
-    data = {
-        # Identificação e rastreabilidade
-        "audit_id": audit_id,
-        "timestamp": datetime.now().isoformat(),
-        "timestamp_utc": timestamp_utc or datetime.now(timezone.utc).isoformat(),
-        # Dados da investigação
-        "query": query,
-        "refined_query": refined_query,
-        "model": model,
-        "preset": preset_label,
-        "active_engines": active_engines or [],
-        "sources": sources,
-        "summary": summary,
-        # Cadeia de custódia digital (hashes SHA-256)
-        "integrity": integrity or {},
-        # Conteúdo bruto por fonte, tal como foi passado a compute_integrity_hashes()
-        # — permite recalcular e verificar cada hash em "integrity" mais tarde,
-        # de forma independente desta sessão.
-        "scraped_content": scraped_content or {},
-        "engine_status": engine_status or {},
-        "search_results": search_results or [],
-    }
-    fpath = INVESTIGATIONS_DIR / fname
-    fpath.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    # chmod 600 no ficheiro pelas mesmas razões do dir.
-    try:
-        os.chmod(fpath, 0o600)
-    except OSError:
-        pass
-    return fname
-
-
 def load_investigations() -> list:
     """Carrega todas as investigações guardadas em disco, ordenadas da mais recente para a mais antiga.
 
@@ -379,54 +292,50 @@ def load_investigations() -> list:
 # mudam frequentemente ou o estado do motor de pesquisa se altera.
 # `show_spinner=False` delega o feedback visual ao código do pipeline principal.
 
-@st.cache_data(ttl=200, show_spinner=False)
-def cached_search_results(refined_query: str):
-    """Executa a pesquisa nos motores da dark web com cache por 200 segundos.
+# Não se guardam em cache pesquisas sem resultados ou com motores em falha, nem
+# recolhas com falhas de rede: repetir a investigação deve voltar a tentar. As
+# funções devolvem também o detalhe da execução (estado por motor, desfecho por
+# página), que de outro modo se perdia num acerto de cache. A hora de recolha de
+# cada resultado é a da recolha real, mesmo quando vem da cache.
 
-    O espaço é substituído por `+` para conformidade com a codificação
-    de parâmetros de pesquisa esperada pelos motores .onion suportados.
+class _NotCached(Exception):
+    """Levantada dentro da função em cache para o Streamlit não guardar o resultado."""
 
-    Nota: o número de threads não faz parte da chave de cache porque não
-    afecta os resultados — apenas a velocidade de obtenção. Incluí-lo
-    causava cache misses desnecessários quando o utilizador ajustava o
-    slider de threads entre execuções com a mesma query.
-
-    Args:
-        refined_query: Consulta refinada pelo LLM.
-
-    Returns:
-        tuple[list[dict], dict[str, str]]: resultados brutos (dicionários
-        com `title` e `link`) e o estado por motor ("ok"/"failed"), usado
-        para a métrica de resiliência EQ-06 (Capítulo 6, secção 6.4.6).
-    """
-    # A query passa intacta — o encoding URL é feito em `fetch_search_results`
-    # (search.py) para engines simples. Adapters (DarkForums, …) recebem a
-    # query original e tratam o encoding consoante o seu protocolo.
-    return get_search_results(refined_query, max_workers=4)
+    def __init__(self, value):
+        super().__init__("not cached")
+        self.value = value
 
 
 @st.cache_data(ttl=200, show_spinner=False)
-def cached_scrape_multiple(filtered: list, _threads: int):
-    """Extrai o conteúdo textual das páginas filtradas com cache por 200 segundos.
+def _cached_search(refined_query: str, _threads: int):
+    out = pipeline.search_with_stats(refined_query, _threads)
+    if not pipeline.search_is_cacheable(out):
+        raise _NotCached(out)
+    return out
 
-    A cache é especialmente valiosa aqui porque o scraping de páginas .onion
-    através do Tor pode ser muito lento (latências de vários segundos por
-    página). Se o utilizador reexecutar o pipeline com a mesma lista de URLs
-    filtrados dentro de 200 segundos, o conteúdo é devolvido imediatamente.
 
-    O parâmetro `_threads` começa com underscore para sinalizar a Streamlit
-    que NÃO faz parte da cache key — só afecta paralelismo, não o resultado.
-    Sem este underscore, mudar o slider de threads invalidaria a cache sem
-    necessidade (mesmo problema que `cached_search_results` já evita).
+def cached_search_results(refined_query: str, threads: int):
+    """pipeline.search_with_stats com cache de 200 s (o n.º de threads não entra na chave)."""
+    try:
+        return _cached_search(refined_query, threads)
+    except _NotCached as e:
+        return e.value
 
-    Args:
-        filtered:  Lista de resultados filtrados (devolvida pela etapa 4).
-        _threads:  Número de fios de execução paralela (não afecta a cache).
 
-    Returns:
-        Dicionário `{url: conteúdo_textual}` para cada página processada.
-    """
-    return scrape_multiple(filtered, max_workers=_threads)
+@st.cache_data(ttl=200, show_spinner=False)
+def _cached_scrape(filtered: list, _threads: int):
+    out = pipeline.scrape_with_details(filtered, _threads)
+    if not pipeline.scrape_is_cacheable(out):
+        raise _NotCached(out)
+    return out
+
+
+def cached_scrape_multiple(filtered: list, threads: int):
+    """pipeline.scrape_with_details com cache de 200 s (a recolha via Tor é lenta)."""
+    try:
+        return _cached_scrape(filtered, threads)
+    except _NotCached as e:
+        return e.value
 
 
 # ---------------------------------------------------------------------------
@@ -690,420 +599,31 @@ if "loaded_investigation" in st.session_state and not run_button:
 # se o utilizador clicar em "Run" com o campo vazio.
 if run_button and query:
 
-    # Limpa qualquer investigação carregada e os dados residuais de um
-    # pipeline anterior para garantir um estado limpo antes de começar.
-    # Sem esta limpeza, dados de uma pesquisa anterior poderiam contaminar
-    # os resultados da pesquisa atual se alguma etapa falhasse.
+    # Limpa a investigação carregada e o resultado anterior antes de começar.
     st.session_state.pop("loaded_investigation", None)
     st.session_state.pop("pipeline_complete", None)
-    for k in ["refined", "results", "filtered", "scraped", "streamed_summary"]:
-        st.session_state.pop(k, None)
 
-    # Obtém a lista de motores de pesquisa activos para uso na Etapa 3
-    active_engines = get_active_engines()
-
-    # Marca o início do pipeline para calcular o tempo total no final
-    pipeline_start = time.time()
-
-    # ------------------------------------------------------------------
-    # Etapa 1/6 — Carregamento do modelo de linguagem
-    # ------------------------------------------------------------------
-    # `st.status` cria um painel expansível com indicadores visuais de
-    # progresso (em curso / concluído / erro). `expanded=True` mantém o
-    # painel aberto durante a execução para que o utilizador veja os
-    # detalhes em tempo real; após conclusão, o painel pode ser colapsado.
-    # Esta etapa instancia o cliente do LLM selecionado — pode incluir
-    # validação da chave de API e estabelecimento de ligação com o servidor.
-    with st.status("**Stage 1/6** — Loading LLM...", expanded=True) as status:
-        t0 = time.time()
-        try:
-            llm = get_llm(model)
-            elapsed = round((time.time() - t0) * 1000)
-            st.write(f"Model: `{model}`")
-            status.update(label=f"**Stage 1/6** — LLM loaded ({_fmt_ms(elapsed)})", state="complete")
-        except Exception as e:
-            status.update(label="**Stage 1/6** — LLM failed", state="error")
-            # `_render_pipeline_error` mostra a mensagem e chama `st.stop()`,
-            # interrompendo a execução das etapas seguintes.
-            _render_pipeline_error("load the selected LLM", e)
-
-    # ------------------------------------------------------------------
-    # Etapa 2/6 — Refinamento da consulta com o LLM
-    # ------------------------------------------------------------------
-    # A consulta original do utilizador é reformulada pelo LLM para ser
-    # mais eficaz nos motores de pesquisa da dark web. Por exemplo, termos
-    # vagos são enriquecidos com vocabulário técnico ou operacional
-    # característico dos fóruns e mercados que se pretende pesquisar.
-    # O resultado refinado é guardado em `st.session_state` para ser
-    # reutilizado nas etapas seguintes sem necessidade de o recalcular.
-    with st.status("**Stage 2/6** — Refining query...", expanded=True) as status:
-        t0 = time.time()
-        try:
-            st.session_state.refined = refine_query(llm, query, preset=selected_preset)
-            elapsed = round((time.time() - t0) * 1000)
-            st.write(f"Original: `{query}`")
-            st.write(f"Refined: `{st.session_state.refined}`")
-            status.update(label=f"**Stage 2/6** — Query refined ({_fmt_ms(elapsed)})", state="complete")
-        except Exception as e:
-            status.update(label="**Stage 2/6** — Query refinement failed", state="error")
-            _render_pipeline_error("refine the query", e)
-
-    # ------------------------------------------------------------------
-    # Etapa 3/6 — Pesquisa distribuída nos motores da dark web
-    # ------------------------------------------------------------------
-    # A consulta refinada é enviada em paralelo a todos os motores de
-    # pesquisa .onion activos (ex.: Ahmia, Torch, DarkSearch) via proxy Tor.
-    # O paralelismo é controlado pelo parâmetro `threads` definido na barra
-    # lateral. Os resultados brutos são truncados ao limite `max_results`
-    # e deduplicados por URL para evitar que a mesma fonte seja processada
-    # várias vezes nas etapas seguintes.
-    with st.status(f"**Stage 3/6** — Searching {len(active_engines)} engines...", expanded=True) as status:
-        t0 = time.time()
-        # search.py já deduplica os resultados por URL — não é necessário
-        # repetir o processo aqui. A deduplicação dupla era redundante e O(2n).
-        try:
-            st.session_state.results, st.session_state.engine_status = cached_search_results(st.session_state.refined)
-        except Exception as e:  # noqa: BLE001 — mostra o erro em vez de um traceback
-            _render_pipeline_error("search the dark web (Stage 3)", e)
-
-        # Aplica o limite máximo de resultados configurado na barra lateral
-        if len(st.session_state.results) > max_results:
-            st.session_state.results = st.session_state.results[:max_results]
-
-        elapsed = round((time.time() - t0) * 1000)
-
-        # Estampar cada resultado com o timestamp UTC de recolha (imutável)
-        retrieved_at_utc = datetime.now(timezone.utc).isoformat()
-        for r in st.session_state.results:
-            r["retrieved_at_utc"] = retrieved_at_utc
-
-        st.write(f"Found **{len(st.session_state.results)}** results across {len(active_engines)} engines")
-        status.update(
-            label=f"**Stage 3/6** — {len(st.session_state.results)} results found ({_fmt_ms(elapsed)})",
-            state="complete",
-        )
-
-    # ------------------------------------------------------------------
-    # Etapa 4/6 — Filtragem por relevância com o LLM
-    # ------------------------------------------------------------------
-    # O LLM avalia cada resultado bruto (título e URL) e seleciona os que
-    # são mais relevantes para a consulta e para o domínio de investigação
-    # escolhido. Esta filtragem é necessária porque os motores de pesquisa
-    # da dark web têm menor precisão do que os motores da web convencional —
-    # muitos resultados são spam, páginas de erro ou conteúdo não relacionado.
-    # Os resultados filtrados são ainda truncados ao limite `max_scrape`
-    # para controlar o tempo e o custo da etapa de extração seguinte.
-    with st.status("**Stage 4/6** — Filtering results with LLM...", expanded=True) as status:
-        t0 = time.time()
-        try:
-            st.session_state.filtered = filter_results(
-                # A query original (a refinada só serve para a pesquisa): a
-                # Etapa 5 e o relatório também usam a original.
-                llm, query, st.session_state.results
-            )
-        except Exception as e:  # noqa: BLE001 — mostra o erro em vez de um traceback
-            _render_pipeline_error("filter the results (Stage 4)", e)
-
-        # Aplica o limite máximo de páginas a extrair configurado na barra lateral
-        if len(st.session_state.filtered) > max_scrape:
-            st.session_state.filtered = st.session_state.filtered[:max_scrape]
-
-        elapsed = round((time.time() - t0) * 1000)
-        st.write(f"Filtered to **{len(st.session_state.filtered)}** most relevant results")
-
-        # Apresenta os URLs filtrados num expansor. Os URLs .onion não podem
-        # ser abertos como hiperligações normais — são apresentados como bloco
-        # de código copiável para que o utilizador os possa colar no Tor Browser.
-        with st.expander("View filtered results"):
-            st.caption("🧅 Links .onion: copia e abre no Tor Browser")
-            for i, item in enumerate(st.session_state.filtered, 1):
-                title = item.get("title", "Untitled")
-                link = item.get("link", "")
-                if ".onion" in link:
-                    # URL .onion: apresenta como texto copiável, não como
-                    # hiperligação, porque os navegadores normais não resolvem
-                    # domínios .onion sem o proxy Tor configurado.
-                    st.markdown(f"**{i}. {title}**")
-                    st.code(link, language=None)
-                else:
-                    # URL convencional (ex.: i2p ou clearnet): pode ser uma
-                    # hiperligação clicável directamente no navegador.
-                    st.markdown(f"{i}. [{title}]({link})")
-
-        status.update(
-            label=f"**Stage 4/6** — Filtered to {len(st.session_state.filtered)} results ({_fmt_ms(elapsed)})",
-            state="complete",
-        )
-
-    # ------------------------------------------------------------------
-    # Etapa 5/6 — Extracção de conteúdo (scraping)
-    # ------------------------------------------------------------------
-    # As páginas filtradas são acedidas via proxy Tor e o seu conteúdo
-    # textual é extraído. O scraping é feito em paralelo (controlado por
-    # `threads`) para mitigar a latência inerente à rede Tor.
-    # Após a extracção, as páginas com conteúdo muito curto (menos de 150
-    # caracteres) são descartadas — tipicamente correspondem a páginas de
-    # erro, redireccionamentos ou domínios que já não estão activos.
-    # O limiar de 150 caracteres é suficiente para filtrar respostas de erro
-    # genéricas (ex.: "403 Forbidden") mas suficientemente baixo para não
-    # descartar páginas legítimas com conteúdo escasso.
-    with st.status(f"**Stage 5/6** — Scraping {len(st.session_state.filtered)} pages...", expanded=True) as status:
-        t0 = time.time()
-        try:
-            st.session_state.scraped = cached_scrape_multiple(
-                st.session_state.filtered, threads
-            )
-        except Exception as e:  # noqa: BLE001 — mostra o erro em vez de um traceback
-            _render_pipeline_error("scrape the selected pages (Stage 5)", e)
-        # Contagens desta etapa (scrape.last_details/last_blocked_count): páginas
-        # pedidas, válidas, inacessíveis/erro, e bloqueadas pela salvaguarda ética.
-        _requested = len(st.session_state.filtered)
-        _valid = len(st.session_state.scraped)
-        _blocked = scrape_module.last_blocked_count
-        st.session_state.safety_blocked = _blocked
-        st.session_state.scrape_outcomes = dict(Counter(
-            d.get("status", "?") for d in scrape_module.last_details.values()))
-
-        # Filtra resultados com conteúdo insuficiente (páginas inacessíveis
-        # ou que devolveram apenas o título sem corpo de texto significativo)
-        meaningful_scraped = {
-            url: content
-            for url, content in st.session_state.scraped.items()
-            if len(content) > 150  # o raspador já só devolve páginas válidas; mantém-se o mínimo
-        }
-
-        # Filtra por relevância: descarta fontes cujo conteúdo scrapeado
-        # não menciona nenhuma keyword da query original. Isto evita que
-        # conteúdo genérico/irrelevante polua o relatório final do LLM.
-        pre_relevance_count = len(meaningful_scraped)
-        meaningful_scraped = filter_scraped_by_relevance(query, meaningful_scraped)
-        relevance_removed = pre_relevance_count - len(meaningful_scraped)
-
-        # Sincroniza session_state.scraped com o dict efectivamente usado no
-        # relatório (sem fontes <150 chars e sem fontes irrelevantes). Sem
-        # esta atribuição, leitores posteriores (debug, reruns) viam o dict
-        # original com fontes que NÃO entraram na análise.
-        st.session_state.scraped = meaningful_scraped
-
-        # Estampar cada fonte com o timestamp UTC de scraping
-        scraped_at_utc = datetime.now(timezone.utc).isoformat()
-        for item in st.session_state.filtered:
-            if item.get("link", "") in meaningful_scraped:
-                item["scraped_at_utc"] = scraped_at_utc
-
-        # Calcular hashes SHA-256 para cadeia de custódia forense
-        integrity = compute_integrity_hashes(meaningful_scraped)
-        st.session_state.integrity = integrity
-
-        elapsed = round((time.time() - t0) * 1000)
-        scraped_count = len(meaningful_scraped)
-        failed_count = max(0, _requested - _valid - _blocked)
-        note = f" ({failed_count} inaccessible/error pages removed)" if failed_count else ""
-        if _blocked:
-            note += f" ({_blocked} blocked by the ethics safeguard — logged for referral, never requested)"
-        relevance_note = f" ({relevance_removed} irrelevant pages removed)" if relevance_removed else ""
-        st.write(f"Scraped **{scraped_count}** pages with content{note}{relevance_note}")
-        st.caption(f"Hash global SHA-256: `{integrity['overall_sha256'][:16]}...`")
-
-        # Expande para mostrar o conteúdo efectivamente recolhido em cada fonte.
-        # Permite ao utilizador verificar o que foi raspado antes do Stage 6,
-        # tornando o pipeline transparente e auditável.
-        # O LLM analisa este mesmo conteúdo em detalhe na Etapa 6/6.
-        with st.expander(f"📄 Conteúdo recolhido por fonte ({scraped_count})", expanded=False):
-            st.caption("Texto extraído de cada página — o LLM lê e analisa este conteúdo na Etapa 6/6")
-            for url, content in list(meaningful_scraped.items()):
-                # Recupera o título a partir dos resultados filtrados
-                title = next(
-                    (r.get("title", "Sem título") for r in st.session_state.filtered
-                     if r.get("link") == url),
-                    "Sem título",
-                )
-                st.markdown(f"**{title}**")
-                # Links .onion como bloco copiável; clearweb como inline code
-                if ".onion" in url:
-                    st.code(url, language=None)
-                else:
-                    st.markdown(f"`{url}`")
-                # Excerto dos primeiros 500 caracteres do conteúdo raspado
-                excerpt = content[:500].strip()
-                if len(content) > 500:
-                    excerpt += " …"
-                st.markdown(f"*{excerpt}*")
-                st.divider()
-
-        status.update(
-            label=f"**Stage 5/6** — {scraped_count} pages scraped ({_fmt_ms(elapsed)})",
-            state="complete",
-        )
-
-    # ------------------------------------------------------------------
-    # Etapa 6/6 — Geração do relatório de inteligência (streaming)
-    # ------------------------------------------------------------------
-    # O LLM analisa o conteúdo extraído e gera um relatório estruturado
-    # de inteligência adaptado ao domínio de investigação e às instruções
-    # personalizadas do utilizador.
-    #
-    # O relatório é apresentado em modo de streaming: cada fragmento de
-    # texto gerado pelo LLM é imediatamente adicionado ao ecrã em vez de
-    # aguardar a conclusão completa. Isto melhora significativamente a
-    # experiência percebida porque o utilizador começa a ler os resultados
-    # enquanto o LLM ainda está a gerar o restante texto.
-    #
-    # A implementação usa um `BufferedStreamingHandler` (callback LangChain)
-    # que acumula os fragmentos em `streamed_summary` e actualiza o
-    # componente `summary_slot` (um `st.empty`) a cada novo fragmento.
-
-    # Inicializa a cadeia de texto do relatório no estado de sessão para
-    # que o callback `ui_emit` possa acumular os fragmentos incrementalmente.
-    st.session_state.streamed_summary = ""
-
-    # Cria o contentor do relatório acima do painel de estado da Etapa 6.
-    # Desta forma o relatório aparece visualmente antes do painel de estado,
-    # proporcionando uma leitura mais natural do topo para o fundo.
-    findings_container = st.container()
-    with findings_container:
-        st.subheader(":red[Findings]", anchor=None, divider="gray")
-        # `st.empty()` cria um espaço reservado que pode ser actualizado
-        # repetidamente sem adicionar novos elementos à página — essencial
-        # para o efeito de streaming incremental.
-        summary_slot = st.empty()
-
-    def ui_emit(chunk: str):
-        """Callback invocado pelo `BufferedStreamingHandler` a cada fragmento do LLM.
-
-        Acumula o texto gerado em `streamed_summary` e actualiza o componente
-        `summary_slot` com o texto completo acumulado até ao momento.
-        A substituição completa do texto (em vez de apenas acrescentar o
-        fragmento) garante que o Markdown é renderizado correctamente mesmo
-        quando os fragmentos dividem elementos de formatação (ex.: `**negrito**`
-        dividido entre dois fragmentos consecutivos).
-
-        Args:
-            chunk: Fragmento de texto devolvido pelo LLM nesta iteração.
-        """
-        st.session_state.streamed_summary += chunk
-        summary_slot.markdown(st.session_state.streamed_summary)
-
-    # O painel de estado da Etapa 6 fica visível enquanto o LLM está a gerar
-    # o relatório, indicando ao utilizador que o pipeline ainda está em curso.
-    with st.status("**Stage 6/6** — Generating intelligence summary...", expanded=True) as status:
-        t0 = time.time()
-
-        # Configura o handler de streaming e associa-o ao cliente do LLM.
-        # O `BufferedStreamingHandler` garante que fragmentos muito pequenos
-        # são agrupados antes de actualizar a interface, reduzindo o número
-        # de re-renders e melhorando o desempenho visual.
-        stream_handler = BufferedStreamingHandler(ui_callback=ui_emit)
-        llm.callbacks = [stream_handler]
-
-        # Invoca a geração do relatório. O texto é normalmente acumulado em
-        # `streamed_summary` pelo callback `ui_emit` durante o streaming — MAS
-        # nem todos os backends emitem tokens durante invoke (e.g., alguns
-        # modelos llama.cpp). Por isso capturamos também o valor de retorno e
-        # usamo-lo como fonte autoritativa: sem isto, um backend sem streaming
-        # produziria um relatório VAZIO (streamed_summary == "").
-        try:
-            _result_text = generate_summary(
-                llm, query, meaningful_scraped,
-                preset=selected_preset, custom_instructions=custom_instructions,
-            )
-        except Exception as e:  # noqa: BLE001 — mostra o erro em vez de um traceback
-            _render_pipeline_error("generate the report (Stage 6)", e)
-        # O valor devolvido é a versão final: inclui os avisos que
-        # generate_summary antepõe (recusa do modelo, molde por preencher), que
-        # o texto recebido em streaming não tem. Usa-se sempre o devolvido e
-        # volta a desenhar-se se for diferente do que foi mostrado ao vivo.
-        if _result_text:
-            if _result_text != st.session_state.streamed_summary:
-                summary_slot.markdown(_result_text)
-            st.session_state.streamed_summary = _result_text
-        elapsed = round((time.time() - t0) * 1000)
-        status.update(
-            label=f"**Stage 6/6** — Summary generated ({_fmt_ms(elapsed)})",
-            state="complete",
-        )
-
-    # ------------------------------------------------------------------
-    # Persistência e apresentação final dos resultados
-    # ------------------------------------------------------------------
-
-    total_elapsed = round(time.time() - pipeline_start, 1)
-    pipeline_ms = int(total_elapsed * 1000)
-
-    # Gerar ID único para esta investigação (usado no PDF e no log de auditoria)
-    audit_id = str(uuid.uuid4())
-    integrity = st.session_state.get("integrity", {})
-    # Hora da investigação: a mesma no JSON e no PDF (o PDF não usa a hora a que é gerado).
-    run_ts_utc = datetime.now(timezone.utc).isoformat()
-
-    # Guardar investigação em disco com campos forenses completos
-    _fname = save_investigation(
-        query=query,
-        refined_query=st.session_state.refined,
-        model=model,
-        preset_label=selected_preset_label,
-        sources=st.session_state.filtered,
-        summary=st.session_state.streamed_summary,
-        audit_id=audit_id,
-        active_engines=[e["name"] for e in active_engines],
-        integrity=integrity,
-        scraped_content=st.session_state.get("scraped", {}),
-        engine_status=st.session_state.get("engine_status", {}),
-        search_results=st.session_state.get("results", []),
-        timestamp_utc=run_ts_utc,
+    # As 6 etapas, com um painel de estado cada (ui_pipeline.py); a lógica é a
+    # de pipeline.py, a mesma que a avaliação usa.
+    run, findings_container = run_with_ui(
+        query, _settings,
+        on_error=_render_pipeline_error,
+        search_fn=cached_search_results,
+        scrape_fn=cached_scrape_multiple,
     )
 
-    # Registar no log de auditoria
-    _engine_status = st.session_state.get("engine_status", {})
-    log_investigation({
-        "audit_id": audit_id,
-        "query": query,
-        "refined_query": st.session_state.refined,
-        "model": model,
-        "preset": selected_preset_label,
-        "engines_active": [e["name"] for e in active_engines],
-        "results_found": len(st.session_state.results),
-        "results_filtered": len(st.session_state.filtered),
-        "results_scraped": scraped_count,
-        "summary_length_chars": len(st.session_state.streamed_summary),
-        "pipeline_duration_ms": pipeline_ms,
-        "errors": [],
-        # EQ-06 (Capítulo 6, secção 6.4.6) — "Tolerância a motores caídos":
-        # nº de motores efetivamente tentados vs quantos falharam (timeout,
-        # status != 200, ou excepção de rede/circuito Tor).
-        "engines_attempted": len(_engine_status),
-        "engines_failed": sum(1 for v in _engine_status.values() if v == "failed"),
-    })
+    # Persistência (JSON da investigação) e audit trail, no formato único de pipeline.py.
+    _fname = pipeline.save_investigation(
+        pipeline.investigation_record(run, preset_label=selected_preset_label), INVESTIGATIONS_DIR)
+    log_investigation(pipeline.audit_record(run, preset_label=selected_preset_label))
 
-    st.success(f"Pipeline completed in {_fmt_ms(pipeline_ms)} — saved as `{_fname}`")
+    st.success(f"Pipeline completed in {_fmt_ms(run.total_ms)} — saved as `{_fname}`")
 
-    # Guarda todos os dados necessários para apresentação persistente.
-    # Este dicionário permite re-renderizar resultados + downloads em
-    # reruns subsequentes (ex.: após clicar num botão de download)
-    # sem que o pipeline precise de ser reexecutado.
-    st.session_state["pipeline_complete"] = {
-        "audit_id": audit_id,
-        "query": query,
-        "refined": st.session_state.refined,
-        "model": model,
-        "preset_label": selected_preset_label,
-        "filtered": st.session_state.filtered,
-        "results_count": len(st.session_state.results),
-        "scraped_count": scraped_count,
-        "summary": st.session_state.streamed_summary,
-        "integrity": integrity,
-        "active_engines": [e["name"] for e in active_engines],
-        "pipeline_ms": pipeline_ms,
-        "fname": _fname,
-        "timestamp_utc": run_ts_utc,
-        "scraped_content": st.session_state.get("scraped", {}),
-    }
+    # Dados para voltar a desenhar o resultado nos reruns (p. ex. após um download).
+    st.session_state["pipeline_complete"] = complete_dict(run, selected_preset_label, _fname)
 
-    # Apresentação inline imediata (durante o run do pipeline).
-    # `findings_container` foi criado antes do streaming para que o
-    # `summary_slot` (st.empty) actualize a região correcta — passamo-lo
-    # ao helper para que escreva o markdown final dentro dele em vez de
-    # criar um novo bloco abaixo do painel de Stage 6.
+    # O relatório já está no findings_container (streaming); o helper acrescenta
+    # Notes, Sources e os downloads.
     _render_pipeline_result(
         st.session_state["pipeline_complete"],
         findings_container=findings_container,
