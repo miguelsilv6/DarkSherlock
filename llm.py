@@ -28,6 +28,7 @@ para investigação defensiva e resposta a incidentes (DFIR).
 """
 
 import re
+from collections import Counter
 import logging
 
 import text_match as tm
@@ -703,11 +704,12 @@ def filter_scraped_by_relevance(query: str, scraped: dict, min_keyword_hits: int
     Etapa 5: mantém as fontes cujo TEXTO (sem o título do resultado de
     pesquisa) cumpre o critério de termos da query e ordena-as por relevância.
 
-    Critério (text_match.required_hits): metade dos termos-chave da query,
-    arredondada para cima — "lockbit leak site" exige "lockbit"; "cobalt
-    strike beacon" exige 2 dos 3; entidades (email, NIF, domínio) contam como
-    termos-chave e são reconhecidas com variantes de escrita. Sem termos-chave,
-    exige 2 termos de contexto.
+    Critério (text_match.required_hits): com 1 ou 2 termos-chave, todos
+    ("lockbit leak site" exige "lockbit"; "Akira ransomware Portugal" exige
+    "akira" e "portugal"); com 3 ou mais, metade arredondada para cima
+    ("cobalt strike beacon" exige 2 dos 3). Entidades (email, NIF, domínio)
+    contam como termos-chave e são reconhecidas com variantes de escrita. Sem
+    termos-chave, exige 2 termos de contexto.
 
     Ao contrário da versão anterior, NÃO devolve todas as fontes quando
     nenhuma cumpre o critério: nesse caso devolve {} e o relatório diz que não
@@ -902,12 +904,14 @@ Produz a análise forense agora. Responde APENAS em Português de Portugal."""
     chain = prompt_template | llm | StrOutputParser()
     result = _strip_reasoning(chain.invoke({"user_input": user_message}))
     if isinstance(evidence, dict):
+        result, quality_banner = _apply_quality_gate(result, len(evidence))
         result = _append_ioc_check(result, evidence, query)
         if len(evidence) == 1:
             result = (
                 "> ⚠️ **Evidência limitada:** este relatório baseia-se numa única fonte. "
                 "Confirma as conclusões noutras fontes antes de as usar.\n\n" + result
             )
+        result = quality_banner + result
     result = _flag_refusal(result)
     return _flag_scaffold_echo(result)
 
@@ -932,6 +936,100 @@ _IOC_PATTERNS = {
 
 # Resultado da última verificação de IOCs (avaliação/diagnóstico).
 last_ioc_check: dict = {}
+
+
+# ---------------------------------------------------------------------------
+# Controlo de qualidade do relatório (Etapa 6)
+# ---------------------------------------------------------------------------
+# Modelos pequenos (p. ex. 0,5B) entram em ciclos de repetição com o prompt do
+# relatório e ignoram o formato: o texto era gravado e mostrado como válido.
+# Resultado da última verificação (pipeline.py grava-o em "summary_quality").
+last_summary_quality: dict = {}
+
+_RE_MD_HEADING = re.compile(r"^#{1,6}\s")
+_RE_REPORT_SECTION = re.compile(r"^##\s*([1-5])\.", re.MULTILINE)
+_RE_CITATION = re.compile(r"\[FONTE\s*\d+\]", re.IGNORECASE)
+
+
+def _split_blocks(text: str) -> list[list[str]]:
+    """Blocos de Markdown: cada um começa num cabeçalho (o 1.º pode não ter cabeçalho)."""
+    blocks, cur = [], []
+    for line in (text or "").splitlines():
+        if _RE_MD_HEADING.match(line) and cur:
+            blocks.append(cur)
+            cur = []
+        cur.append(line)
+    if cur:
+        blocks.append(cur)
+    return blocks
+
+
+def _block_key(lines: list[str]) -> str:
+    """Chave de comparação: cabeçalho sem numeração ("### 1.12 X" == "### 1.13 X") + corpo."""
+    head = lines[0].strip().lower()
+    if _RE_MD_HEADING.match(lines[0]):
+        head = re.sub(r"[\d.]+", "", head).strip()
+    body = "\n".join(ln.strip().lower() for ln in lines[1:] if ln.strip())
+    return head + "\n" + body
+
+
+def summary_quality(text: str, n_sources: int) -> dict:
+    """Problemas do relatório: repetição, secções do formato em falta, nenhuma citação [FONTE N]."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    dup_ratio = 1 - len(set(lines)) / len(lines) if lines else 0.0
+    counts = Counter(_block_key(b) for b in _split_blocks(text))
+    max_rep = max(counts.values(), default=0)
+    present = set(_RE_REPORT_SECTION.findall(text or ""))
+    missing = [n for n in "12345" if n not in present]
+    citations = len(_RE_CITATION.findall(text or ""))
+    problems = []
+    if max_rep >= 3 or (len(lines) >= 10 and dup_ratio > 0.5):
+        problems.append("repetition")
+    if len(missing) >= 3:
+        problems.append("missing_sections")
+    if n_sources and citations == 0:
+        problems.append("no_citations")
+    return {"ok": not problems, "problems": problems, "max_block_repeats": max_rep,
+            "duplicate_line_ratio": round(dup_ratio, 3), "missing_sections": missing, "citations": citations}
+
+
+def _collapse_repeats(text: str) -> str:
+    """Fica só a 1.ª ocorrência de cada bloco repetido."""
+    seen, out = set(), []
+    for block in _split_blocks(text):
+        key = _block_key(block)
+        # repetido, ou o início de um bloco já visto (a última repetição costuma vir cortada)
+        if key in seen or any(k.startswith(key) for k in seen):
+            continue
+        seen.add(key)
+        out.append("\n".join(block))
+    return "\n".join(out)
+
+
+def _apply_quality_gate(summary: str, n_sources: int) -> tuple[str, str]:
+    """(relatório, aviso a antepor). Remove as repetições e explica o que falhou."""
+    global last_summary_quality
+    q = summary_quality(summary, n_sources)
+    last_summary_quality = q
+    if q["ok"]:
+        return summary, ""
+    reasons = []
+    if "repetition" in q["problems"]:
+        summary = _collapse_repeats(summary)
+        reasons.append(f"o modelo entrou em ciclo de repetição (o mesmo bloco até {q['max_block_repeats']}×; "
+                       "as repetições foram removidas)")
+    if "missing_sections" in q["problems"]:
+        reasons.append("faltam as secções " + ", ".join(q["missing_sections"]) + " do formato")
+    if "no_citations" in q["problems"]:
+        reasons.append("não cita nenhuma [FONTE N]")
+    severe = {"repetition", "missing_sections"} & set(q["problems"])
+    title = ("⛔ **Relatório inválido — não usar como evidência.**" if severe
+             else "⚠️ **Relatório sem citações das fontes — confirma cada afirmação na evidência.**")
+    logger.warning("generate_summary: relatório com problemas de qualidade: %s", q["problems"])
+    text = "; ".join(reasons)
+    banner = (f"> {title} " + text[:1].upper() + text[1:] + ". Acontece sobretudo com modelos pequenos: "
+              "repete a investigação com um modelo maior (página Settings).\n\n")
+    return summary, banner
 
 
 def verify_iocs(summary: str, evidence: dict, query: str = "") -> dict:

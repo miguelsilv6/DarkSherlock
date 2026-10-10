@@ -49,6 +49,7 @@ TEXT_SUFFIXES = {".md", ".txt", ".csv", ".tsv", ".json", ".html", ".htm", ".log"
 FORBIDDEN_PATHS = [
     re.compile(r"(^|/)scenarios\.local\.json$"),
     re.compile(r"^referrals/"),
+    re.compile(r"^config/ui_settings\.json$"),   # pode ter instruções com alvos reais
     re.compile(r"^investigations/"),
     re.compile(r"^evaluation/ground_truth/"),
     re.compile(r"^evaluation/baseline_manual/(sources|reports)/"),

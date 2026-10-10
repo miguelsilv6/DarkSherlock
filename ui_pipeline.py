@@ -64,6 +64,8 @@ def run_with_ui(query: str, settings: dict, *, on_error, search_fn=pipeline.sear
     r = pipeline.PipelineResult(query=query, preset=settings["selected_preset"], model=settings["model"])
     t_start = time.time()
     threads = settings["threads"]
+    pipeline.check_model(r)
+    shown = _show_new_warnings(r, 0)  # modelo pequeno demais: avisa antes de começar
 
     # Etapa 1 — modelo
     with st.status("**Stage 1/6** — Loading LLM...", expanded=True) as status:
@@ -98,7 +100,7 @@ def run_with_ui(query: str, settings: dict, *, on_error, search_fn=pipeline.sear
                  + (f" ({failed} engines failed)" if failed else ""))
         status.update(label=f"**Stage 3/6** — {len(r.search_results)} results found "
                             f"({fmt_ms(r.timings_ms['search'])})", state="complete")
-    shown = _show_new_warnings(r, 0)
+    shown = _show_new_warnings(r, shown)
 
     # Etapa 4 — seleção pelo LLM (títulos/URLs)
     with st.status("**Stage 4/6** — Filtering results with LLM...", expanded=True) as status:

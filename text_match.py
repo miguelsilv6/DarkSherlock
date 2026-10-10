@@ -15,7 +15,7 @@ Substitui a comparação por subcadeia com tokenização só por espaços. Trata
 Funções principais:
   - query_terms(query) -> list[Term]
   - match(text, terms) -> Match (termos encontrados, termos-chave encontrados, pontuação)
-  - is_relevant(match, terms) -> bool (limiar graduado, ver docstring)
+  - is_relevant(match, terms) -> bool (limiar graduado, ver required_hits)
   - best_window(text, terms, size) -> excerto de `size` caracteres com mais termos
 """
 
@@ -166,14 +166,18 @@ def required_hits(terms: list[Term]) -> tuple[int, bool]:
     """
     Limiar graduado: (n.º mínimo de termos, conta-se sobre termos-chave?).
 
-    - Com termos-chave: metade deles, arredondada para cima (1 de 1, 1 de 2,
-      2 de 3, 2 de 4, ...). Entidades (email, id, domínio, frase) contam como
-      termos-chave; "lockbit leak site" exige "lockbit".
+    - Com 1 ou 2 termos-chave: todos ("lockbit leak site" exige "lockbit";
+      "Akira ransomware Portugal" exige "akira" E "portugal").
+    - Com 3 ou mais: metade, arredondada para cima (2 de 3, 2 de 4, 3 de 5, ...).
+      Entidades (email, id, domínio, frase) contam como termos-chave.
     - Sem termos-chave (só contexto): 2 termos de contexto (ou 1, se só houver 1).
+
+    Com 2 termos-chave, "metade" era 1: para "Akira ransomware Portugal", uma
+    página que só falava de Portugal (uma livraria) passava como evidência.
     """
     n_key = sum(1 for t in terms if t.key)
     if n_key:
-        return math.ceil(n_key / 2), True
+        return (n_key if n_key <= 2 else math.ceil(n_key / 2)), True
     n_ctx = sum(1 for t in terms if not t.key)
     return min(2, n_ctx), False
 

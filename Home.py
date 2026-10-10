@@ -484,6 +484,7 @@ def _sync_preset_from_pills():
         label = val.split("  ", 1)[1]
         st.session_state["preset_select"] = label
         st.session_state[settings_state.PREFIX + "preset_select"] = label
+        settings_state.save_value("preset_select", label)
 
 
 # Deriva o preset por defeito do estado da sidebar (se já foi seleccionado

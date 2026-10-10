@@ -58,7 +58,7 @@ def test_replay_counts_what_v2_filters_drop(runs, capsys):
 
 
 def test_compare_two_versions(runs, capsys):
-    rc = C.main(["compare", "--investigations", str(runs / "eval_*.json"), "--model", "M"])
+    rc = C.main(["compare", "--investigations", str(runs / "eval_*.json"), "--model", "M", "--new", "2.0"])
     out = capsys.readouterr().out
     assert rc == 0
     a1 = next(ln for ln in out.splitlines() if ln.startswith("| A1 |"))
