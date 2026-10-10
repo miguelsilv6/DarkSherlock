@@ -139,6 +139,7 @@ def _sync_preset_inv():
         label = val.split("  ", 1)[1]
         st.session_state["preset_select"] = label
         st.session_state[settings_state.PREFIX + "preset_select"] = label
+        settings_state.save_value("preset_select", label)
 
 
 _current_label_inv = settings_state.get("preset_select", _PRESET_LABELS_INV[0])

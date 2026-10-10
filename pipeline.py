@@ -86,6 +86,7 @@ class PipelineResult:
     integrity: dict = field(default_factory=dict)
     summary: str = ""
     ioc_check: dict = field(default_factory=dict)
+    summary_quality: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
     errors: list = field(default_factory=list)
     timings_ms: dict = field(default_factory=dict)
@@ -147,6 +148,18 @@ def scrape_is_cacheable(out) -> bool:
 # ---------------------------------------------------------------------------
 # Etapas
 # ---------------------------------------------------------------------------
+def check_model(r: PipelineResult) -> None:
+    """Aviso se o modelo for pequeno demais para o relatório (embutidos abaixo de 1,5B)."""
+    try:
+        import local_models
+        too_small = local_models.is_too_small_for_report(r.model)
+    except Exception:  # noqa: BLE001 — sem llama.cpp não há modelos embutidos
+        too_small = False
+    if too_small:
+        r.warnings.append(f"O modelo {r.model} é pequeno demais para esta análise: tende a repetir texto e "
+                          "a inventar. Escolhe um modelo maior na página Settings.")
+
+
 def stage_refine(r: PipelineResult, llm) -> None:
     with _Timer(r, "refine_query"):
         r.refined_query = llm_module.refine_query(llm, r.query, preset=r.preset)
@@ -191,16 +204,30 @@ def stage_scrape(r: PipelineResult, threads: int, scrape_fn=scrape_with_details)
         if r.filtered and not r.pages_valid:
             r.warnings.append("Nenhuma das páginas selecionadas foi recolhida com sucesso.")
         elif r.pages_valid and not kept:
-            r.warnings.append("Nenhuma das páginas recolhidas menciona os termos da query.")
+            r.warnings.append("Nenhuma das páginas recolhidas menciona os termos exigidos da query"
+                              + _term_coverage(r) + ".")
+
+
+def _term_coverage(r: PipelineResult) -> str:
+    """" (akira: 0 de 3 páginas; portugal: 3 de 3)" — quantas páginas recolhidas têm cada termo-chave."""
+    import text_match as tm
+    keys = [t.text for t in tm.query_terms(r.query) if t.key]
+    scores = [v for v in r.relevance_scores.values() if not v.get("degenerate")]
+    if not keys or not scores:
+        return ""
+    parts = [f"{k}: {sum(1 for v in scores if k in v.get('found', []))} de {len(scores)} páginas" for k in keys]
+    return " (" + "; ".join(parts) + ")"
 
 
 def stage_summary(r: PipelineResult, llm, custom_instructions: str = "") -> None:
     with _Timer(r, "generate_summary"):
         llm_module.last_ioc_check = {}
+        llm_module.last_summary_quality = {}
         r.summary = llm_module.generate_summary(
             llm, r.query, r.scraped_content, preset=r.preset, custom_instructions=custom_instructions,
         )
         r.ioc_check = dict(llm_module.last_ioc_check)
+        r.summary_quality = dict(llm_module.last_summary_quality)
 
 
 def finish(r: PipelineResult, t_start: float | None = None) -> None:
@@ -224,6 +251,7 @@ def run_pipeline(query: str, preset: str, llm, *, model: str = "", max_results: 
                  search_fn=search_with_stats, scrape_fn=scrape_with_details) -> PipelineResult:
     """Etapas 2–6 completas (o LLM já carregado é a Etapa 1)."""
     r = PipelineResult(query=query, preset=preset, model=model)
+    check_model(r)
     t_start = time.time()
     steps = [
         ("refine", lambda: stage_refine(r, llm)),
@@ -279,6 +307,8 @@ def investigation_record(r: PipelineResult, preset_label: str | None = None, **e
         "relevance_scores": r.relevance_scores,
         "summary": r.summary,
         "ioc_check": r.ioc_check,
+        # Etapa 6: repetição, secções em falta, citações [FONTE N] ("ok": False = relatório inválido).
+        "summary_quality": r.summary_quality,
         # Cadeia de custódia: hashes e o conteúdo exato que foi hashado (verificável depois).
         "integrity": r.integrity,
         "scraped_content": r.scraped_content,
@@ -305,6 +335,7 @@ def audit_record(r: PipelineResult, preset_label: str | None = None, **extra) ->
         "results_filtered": len(r.filtered),
         "results_scraped": len(r.scraped_content),
         "summary_length_chars": len(r.summary),
+        "summary_quality_ok": r.summary_quality.get("ok") if r.summary_quality else None,
         "pipeline_duration_ms": r.total_ms,
         "errors": r.errors,
         # EQ-06: motores efetivamente tentados vs. quantos falharam.

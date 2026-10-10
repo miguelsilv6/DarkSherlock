@@ -22,6 +22,13 @@ for p in (ROOT, ROOT / "evaluation"):
         sys.path.insert(0, str(p))
 
 
+@pytest.fixture(autouse=True)
+def _settings_file_in_tmp(tmp_path, monkeypatch):
+    """As definições gravadas (settings_state) nunca vão para o config/ do repositório."""
+    import settings_state
+    monkeypatch.setattr(settings_state, "SETTINGS_FILE", tmp_path / "ui_settings.json")
+
+
 class FakeResponse:
     def __init__(self, text="", status_code=200, headers=None, url="", encoding="utf-8", content=None):
         self.status_code = status_code

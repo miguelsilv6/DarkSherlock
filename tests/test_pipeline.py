@@ -7,6 +7,7 @@ import re
 import pytest
 
 import pipeline
+from config import PIPELINE_VERSION
 
 _REAL_TOR_CHECK = pipeline.tor_available  # antes de a fixture o substituir
 
@@ -38,7 +39,7 @@ def _offline(monkeypatch):
     monkeypatch.setattr(pipeline, "tor_available", lambda *a, **k: True)
 
 
-def _llm(fake_llm, summary="## 1. Query: lockbit leak site\n\nO LockBit [FONTE 1]."):
+def _llm(fake_llm, summary="## 1. Query: lockbit leak site\n\n## 2. Análise por Fonte\n\nO LockBit [FONTE 1].\n\n## 3. Artefactos / IOCs\n\nNenhum identificado.\n\n## 4. Insights Chave\n\n- x\n\n## 5. Próximos Passos\n\n- y"):
     return fake_llm("lockbit leak site", "2, 1, 3", summary)
 
 
@@ -46,7 +47,7 @@ def test_run_pipeline_end_to_end(fake_llm):
     r = pipeline.run_pipeline("lockbit leak site", "threat_intel", _llm(fake_llm), model="m",
                               max_results=50, max_scrape=3, threads=2,
                               search_fn=_search_fn, scrape_fn=_scrape_fn)
-    assert r.pipeline_version == "2.0"
+    assert r.pipeline_version == PIPELINE_VERSION
     assert r.refined_query == "lockbit leak site"
     assert r.stage4_outcome == "ranked"
     assert [x["link"] for x in r.filtered] == ["http://bbbb.onion/b", "http://aaaa.onion/a", "http://cccc.onion/c"]
@@ -59,6 +60,7 @@ def test_run_pipeline_end_to_end(fake_llm):
     assert any("scraped_at_utc" in x for x in r.filtered if x["link"] == "http://aaaa.onion/a")
     assert not any("scraped_at_utc" in x for x in r.filtered if x["link"] != "http://aaaa.onion/a")
     assert "Evidência limitada" in r.summary  # uma única fonte
+    assert r.summary_quality["ok"] is True and "Relatório inválido" not in r.summary
     assert set(r.timings_ms) == {"refine_query", "search", "filter_results", "scrape", "generate_summary"}
     assert r.timestamp_utc and r.total_ms >= 0 and not r.errors
 

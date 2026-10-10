@@ -13,12 +13,16 @@ import pytest
 pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
+from config import PIPELINE_VERSION  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 ONION_A = "http://" + "a" * 56 + ".onion/x"
 ONION_B = "http://" + "b" * 56 + ".onion/y"
 BODY = ("O grupo LockBit publicou no seu leak site a lista de vitimas, com datas e montantes. "
         "Servidor 10.0.0.5 mencionado. ") * 4
-SUMMARY = "## 1. Query: lockbit leak site\n\nO LockBit [FONTE 1]; IOC 10.0.0.5 e 203.0.113.9."
+SUMMARY = ("## 1. Query: lockbit leak site\n\n## 2. Análise por Fonte\n\nO LockBit [FONTE 1]; IOC 10.0.0.5 "
+           "e 203.0.113.9.\n\n## 3. Artefactos / IOCs\n\n- 10.0.0.5\n\n## 4. Insights Chave\n\n- x\n\n"
+           "## 5. Próximos Passos\n\n- y")
 
 
 @pytest.fixture
@@ -86,7 +90,8 @@ def test_page_runs_the_shared_pipeline(fakes, page):
     files = sorted((fakes / "investigations").glob("investigation_*.json"))
     assert len(files) == 1
     rec = json.loads(files[0].read_text(encoding="utf-8"))
-    assert rec["pipeline_version"] == "2.0" and rec["model"] == "fake-model"
+    assert rec["pipeline_version"] == PIPELINE_VERSION and rec["model"] == "fake-model"
+    assert rec["summary_quality"]["ok"] is True
     assert list(rec["scraped_content"]) == [ONION_A]
     assert rec["engine_status"] == {"E1": "ok", "E2": "failed"}
 
@@ -94,3 +99,19 @@ def test_page_runs_the_shared_pipeline(fakes, page):
     assert not at.exception
     assert "\n".join(m.value for m in at.markdown).count("O LockBit [FONTE 1]") == 1
     assert len(list((fakes / "investigations").glob("*.json"))) == 1
+
+
+def test_small_model_warning_is_visible(fakes, monkeypatch):
+    import llm_utils
+    import local_models
+    monkeypatch.setattr(llm_utils, "get_model_choices", lambda: [local_models.LIGHTEST_MODEL])
+    at = AppTest.from_file(str(ROOT / "Home.py"), default_timeout=60)
+    at.run()
+    at.text_input[0].input("lockbit leak site")
+    next(b for b in at.button if b.label == "Run").click()
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("pequeno demais" in w.value for w in at.warning)
+    rec = json.loads(next((fakes / "investigations").glob("investigation_*.json")).read_text(encoding="utf-8"))
+    assert rec["model"] == local_models.LIGHTEST_MODEL
+    assert any("pequeno demais" in w for w in rec["warnings"])

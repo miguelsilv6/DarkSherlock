@@ -48,6 +48,7 @@ BUILTIN_MODELS: dict[str, dict] = {
         "filename": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
         "n_ctx": 8192,
         "max_tokens": 2048,
+        "params_b": 0.5,  # milhares de milhões de parâmetros
         "size_label": "~400 MB",
         "desc": "O mais leve. Corre em qualquer máquina. Qualidade básica.",
     },
@@ -56,6 +57,7 @@ BUILTIN_MODELS: dict[str, dict] = {
         "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
         "n_ctx": 8192,
         "max_tokens": 2048,
+        "params_b": 1.5,  # milhares de milhões de parâmetros
         "size_label": "~1.1 GB",
         "desc": "Melhor qualidade de análise, ainda leve. Recomendado se a máquina aguentar.",
     },
@@ -64,6 +66,7 @@ BUILTIN_MODELS: dict[str, dict] = {
         "filename": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
         "n_ctx": 8192,
         "max_tokens": 2048,
+        "params_b": 1.2,  # milhares de milhões de parâmetros
         "size_label": "~0.8 GB",
         "desc": "Alternativa Meta Llama. Bom equilíbrio tamanho/qualidade.",
     },
@@ -104,6 +107,7 @@ BUILTIN_MODELS: dict[str, dict] = {
         "filename": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
         "n_ctx": 8192,
         "max_tokens": 2048,
+        "params_b": 3.2,  # milhares de milhões de parâmetros
         "size_label": "~2.0 GB",
         "desc": "Meta Llama, maior que o 1B embutido. Aproxima-se do modelo de referência da Tabela 14 do relatório.",
     },
@@ -112,18 +116,29 @@ BUILTIN_MODELS: dict[str, dict] = {
         "filename": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
         "n_ctx": 8192,
         "max_tokens": 2048,
+        "params_b": 3.8,  # milhares de milhões de parâmetros
         "size_label": "~2.4 GB",
         "desc": "Família Microsoft Phi. 3.8B parâmetros, treinado para forte capacidade de raciocínio relativa ao tamanho.",
     },
 }
 
-# Modelo por omissão: respeita a env DARKSHERLOCK_DEFAULT_MODEL se for válida,
-# senão usa o mais leve (corre garantidamente em qualquer máquina).
+LIGHTEST_MODEL = "Qwen2.5-0.5B (embutido, ultraleve)"
+
+# Valor da env DARKSHERLOCK_DEFAULT_MODEL tal como veio do .env (pode estar vazio).
+_ENV_DEFAULT_MODEL = DEFAULT_BUILTIN_MODEL
+
+# Modelo por omissão "estático": a env, se for válida, senão o mais leve (corre
+# em qualquer máquina e é o que se descarrega se não houver nenhum). Na UI usa-se
+# preferred_default_model(), que prefere o maior modelo já descarregado.
 DEFAULT_BUILTIN_MODEL = (
     DEFAULT_BUILTIN_MODEL
     if DEFAULT_BUILTIN_MODEL in BUILTIN_MODELS
-    else "Qwen2.5-0.5B (embutido, ultraleve)"
+    else LIGHTEST_MODEL
 )
+
+# Abaixo disto o modelo não consegue seguir o prompt do relatório (Etapa 6) com
+# ~12k caracteres de evidência: entra em ciclos de repetição e inventa.
+MIN_REPORT_PARAMS_B = 1.5
 
 
 _AVAILABLE: Optional[bool] = None
@@ -176,6 +191,33 @@ def is_downloaded(model_choice: str) -> bool:
         return isinstance(path, str)
     except Exception:  # noqa: BLE001
         return False
+
+
+def params_b(model_choice: str) -> float | None:
+    """N.º de parâmetros (milhares de milhões) de um modelo embutido; None se não for embutido."""
+    spec = BUILTIN_MODELS.get(model_choice)
+    return spec.get("params_b") if spec else None
+
+
+def is_too_small_for_report(model_choice: str) -> bool:
+    """True para modelos embutidos abaixo de MIN_REPORT_PARAMS_B (os do Ollama não se sabe: False)."""
+    pb = params_b(model_choice)
+    return pb is not None and pb < MIN_REPORT_PARAMS_B
+
+
+def preferred_default_model() -> str:
+    """Omissão da UI: a env DARKSHERLOCK_DEFAULT_MODEL, se válida; senão o maior modelo
+    embutido já descarregado (sem rede); senão o mais leve.
+
+    Antes era sempre o mais leve (0,5B), e como as definições se perdiam ao
+    reiniciar a app, as investigações passavam a correr com ele sem aviso.
+    """
+    if _ENV_DEFAULT_MODEL in BUILTIN_MODELS:
+        return _ENV_DEFAULT_MODEL
+    downloaded = [k for k in BUILTIN_MODELS if is_downloaded(k)]
+    if downloaded:
+        return max(downloaded, key=lambda k: BUILTIN_MODELS[k].get("params_b") or 0)
+    return LIGHTEST_MODEL
 
 
 def ensure_downloaded(model_choice: str) -> str:

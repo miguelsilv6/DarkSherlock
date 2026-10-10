@@ -20,7 +20,7 @@ Dois modos (só contagens e IDs de cenário na saída — sem queries nem URLs):
 Uso:
     python evaluation/compare_pipelines.py replay  --investigations "investigations/eval_*.json" --model "<modelo>"
     python evaluation/compare_pipelines.py compare --investigations "investigations/eval_*.json" --model "<modelo>" \\
-        --old 1.0-legacy --new 2.0 --out evaluation/results/compare_pipelines.md
+        --old 1.0-legacy --new 2.1 --out evaluation/results/compare_pipelines.md
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
 import versions  # noqa: E402
+from config import PIPELINE_VERSION  # noqa: E402
 
 SCENARIO_IDS = [f"{d}{n}" for d in "ABCD" for n in "123"]
 
@@ -263,7 +264,7 @@ def main(argv=None) -> int:
         p.add_argument("--old", default=versions.LEGACY)
         p.add_argument("--out", default=None)
         if name == "compare":
-            p.add_argument("--new", default="2.0")
+            p.add_argument("--new", default=PIPELINE_VERSION, help=f"Versão nova (default: {PIPELINE_VERSION}).")
         p.set_defaults(func=fn)
     args = ap.parse_args(argv)
     return args.func(args)
