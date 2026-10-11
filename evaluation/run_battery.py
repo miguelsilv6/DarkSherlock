@@ -25,9 +25,11 @@ Fases:
 O que não se automatiza (baseline manual, revisores de EQ-02/03/04) fica
 listado no README.md da bateria, como "pendente".
 
-Os dados reais nunca saem da máquina nem entram no Git: scenarios.local.json,
-investigations/ e evaluation/results/ estão no .gitignore; no terminal e nos
-logs desta bateria só aparecem os IDs e os pseudónimos dos cenários.
+Os casos públicos estão em evaluation/scenarios.public.json (versionado, com
+C1/C3 por preencher); a cópia de trabalho, com os dados do investigador, é
+evaluation/scenarios.local.json, fora do Git, tal como investigations/ e
+evaluation/results/. No terminal e nos logs desta bateria só aparecem os IDs
+e os pseudónimos dos cenários.
 
 Uso:
     python evaluation/run_battery.py --dry-run          # mostra o plano, não corre nada
@@ -111,8 +113,9 @@ class Battery:
             self.problems.append(f"Cenários inválidos: {e}")
             return
         if self.source != "local" and not self.args.allow_synthetic:
-            self.problems.append(f"Não há {scenarios_mod.local_path()}: a bateria usa dados reais. Copia para lá o "
-                                 "ficheiro de casos públicos (ou usa --allow-synthetic para um ensaio).")
+            self.problems.append(f"Não há {scenarios_mod.local_path()}: a bateria usa dados reais. Copia os casos "
+                                 "públicos (cp evaluation/scenarios.public.json evaluation/scenarios.local.json) e "
+                                 "preenche C1/C3, ou usa --allow-synthetic para um ensaio.")
         if self.args.scenarios:
             wanted = {s.strip().upper() for s in self.args.scenarios.split(",")}
             scs = [s for s in scs if s["id"] in wanted]
