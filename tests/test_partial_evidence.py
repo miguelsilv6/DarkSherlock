@@ -95,7 +95,57 @@ def test_partial_title_cannot_break_markdown():
     r = pipeline.PipelineResult(query="Akira Portugal")
     r.filtered = [{"link": "http://a.onion/", "title": "Akira [leak](http://evil)"}]
     r.relevance_scores = {"http://a.onion/": {"found": ["akira"], "key_found": 1, "score": .5}}
-    assert pipeline._partial_pages(r) == ["- [Akira  leak  http://evil](http://a.onion/) — akira ✓ · portugal ✗"]
+    assert pipeline._partial_pages(r) == [("- [Akira  leak  http://evil](http://a.onion/) — akira ✓ · portugal ✗", False)]
+
+
+def _real_run_1141():
+    """A execução de 11/10 às 11:41 (reduzida): só homónimos e um bloqueio da salvaguarda."""
+    r = pipeline.PipelineResult(query=Q, refined_query="Akira ransomware Portugal companies")
+    r.engine_status, r.search_stats = {"E1": "ok"}, {"E1": {"status": "ok_results"}}
+    r.search_results = [{"link": "x"}] * 47
+    toriyama, debconf, other = "http://cgx.onion/toriyama-akira", "http://mk5.onion/", "http://z.onion/"
+    r.filtered = [{"link": toriyama, "title": "Akira Toriyama ✏️  Wiki CgX"},
+                  {"link": debconf, "title": "MiniDebConf Portugal 2023"}, {"link": other, "title": "z"}]
+    r.stage4_outcome, r.stage4_padded = "ranked", 1
+    r.scrape_outcomes = {"ok": 3, "timeout": 2, "blocked_safety": 1, "too_short": 1}
+    r.safety_blocked, r.pages_valid = 1, 3
+    r.relevance_scores = {toriyama: {"found": ["akira"], "key_found": 1, "score": .3},
+                          debconf: {"found": ["portugal"], "key_found": 1, "score": .3},
+                          other: {"found": [], "key_found": 0, "score": 0}}
+    return r
+
+
+def test_homonyms_are_flagged_not_hidden():
+    text = pipeline.no_evidence_report(_real_run_1141())
+    section = text.split("### Páginas com evidência parcial", 1)[1].split("###", 1)[0]
+    lines = [x for x in section.splitlines() if x.startswith("- ")]
+    assert len(lines) == 2 and all("possível homónimo" in x for x in lines)
+    assert "akira ✓ · portugal ✗ · contexto: ransomware ✗, alvos ✗" in lines[0]
+    assert "alias do grupo" in text  # só homónimos: volta a sugestão de reformular
+
+
+def test_page_with_context_term_comes_before_homonym():
+    r = _real_run_1141()
+    r.filtered.append({"link": "http://ak.onion/", "title": "Akira"})
+    r.relevance_scores["http://ak.onion/"] = {"found": ["akira", "ransomware"], "key_found": 1, "score": .4}
+    rows = pipeline._partial_pages(r)
+    assert rows[0] == ("- [Akira](http://ak.onion/) — akira ✓ · portugal ✗ · contexto: ransomware ✓, alvos ✗", False)
+    assert [h for _, h in rows] == [False, True, True]
+    assert "alias do grupo" not in pipeline.no_evidence_report(r)
+
+
+def test_no_homonym_flag_without_context_terms():
+    r = pipeline.PipelineResult(query="Akira Portugal")
+    r.relevance_scores = {"http://a.onion/": {"found": ["akira"], "key_found": 1, "score": .5}}
+    [(line, homonym)] = pipeline._partial_pages(r)
+    assert not homonym and "homónimo" not in line and "contexto" not in line
+
+
+def test_safety_block_is_counted_once():
+    text = pipeline.no_evidence_report(_real_run_1141())
+    recolha = next(x for x in text.splitlines() if x.startswith("- **Recolha"))
+    assert "blocked_safety" not in recolha
+    assert recolha.count("salvaguarda") == 1 and "1 bloqueada(s) pela salvaguarda ética" in recolha
 
 
 def test_eq03_ignores_term_padded_sources(tmp_path):
