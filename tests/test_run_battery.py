@@ -121,3 +121,42 @@ def test_dry_run_main(tmp_path, monkeypatch, models, capsys):
     out = capsys.readouterr().out
     assert "[collect] run_scenarios" in out and "[redact] redact_check" in out
     assert "lockbit" not in out.lower()
+
+
+def test_shell_wrapper_syntax():
+    import subprocess
+    sh = rb.ROOT / "evaluation" / "run_battery.sh"
+    assert os.access(sh, os.X_OK)
+    assert subprocess.run(["bash", "-n", str(sh)]).returncode == 0
+
+
+def test_sigterm_writes_readme_with_interrupted_step(tmp_path):
+    """`run_battery.sh stop` envia SIGTERM: a etapa em curso fica "interrompida" e o README é escrito."""
+    import signal
+    import subprocess
+    import sys
+    script = tmp_path / "term.py"
+    script.write_text(f"""
+import sys; sys.path[:0] = [{str(rb.HERE)!r}, {str(rb.ROOT)!r}]
+import run_battery as rb
+from pathlib import Path
+rb.Battery.build = lambda self, phase: [rb.Step("longa", phase, "Dorme.", [rb.PY, "-c", "import time; time.sleep(60)"])]
+rb.Battery.check_models = lambda self: setattr(self, "main_model", "m")
+rb.Battery.check_environment = lambda self: None
+_init = rb.Battery.__init__
+def init(self, args, root=rb.ROOT):
+    _init(self, args, root=Path({str(tmp_path)!r}))
+rb.Battery.__init__ = init
+sys.exit(rb.main(["--phases", "analyze", "--allow-synthetic", "--no-tests", "--quiet"]))
+""", encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    for _ in range(100):
+        time.sleep(0.1)
+        logs = list(tmp_path.glob("evaluation/results/battery_*/01_longa.log"))
+        if logs:
+            break
+    proc.send_signal(signal.SIGTERM)
+    out, _ = proc.communicate(timeout=30)
+    assert proc.returncode == 1, out
+    readme = next(tmp_path.glob("evaluation/results/battery_*/README.md")).read_text(encoding="utf-8")
+    assert "| longa | analyze | interrompida |" in readme

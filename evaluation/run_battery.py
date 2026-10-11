@@ -32,11 +32,13 @@ evaluation/results/. No terminal e nos logs desta bateria só aparecem os IDs
 e os pseudónimos dos cenários.
 
 Uso:
-    python evaluation/run_battery.py --dry-run          # mostra o plano, não corre nada
-    python evaluation/run_battery.py --yes              # tudo, sem pedir confirmação
-    nohup python evaluation/run_battery.py --yes > battery.out 2>&1 &   # corrida longa
-    python evaluation/run_battery.py --phases analyze,redact --since 20261012
-    python evaluation/run_battery.py --scenarios A1,B2 --runs 1 --multi-runs 1 --yes   # ensaio curto
+    ./evaluation/run_battery.sh --dry-run               # mostra o plano, não corre nada
+    ./evaluation/run_battery.sh                         # corrida longa, em segundo plano: sobrevive
+                                                        # ao fecho do terminal e bloqueia a suspensão
+    ./evaluation/run_battery.sh status | log | stop     # acompanhar ou parar
+    .venv/bin/python evaluation/run_battery.py --yes    # o mesmo, em primeiro plano
+    ./evaluation/run_battery.sh --phases analyze,redact --since 20261012
+    ./evaluation/run_battery.sh --scenarios A1,B2 --runs 1 --multi-runs 1     # ensaio curto
 
 Opções úteis: --main-model "<label>", --models "<label1>;<label2>" (separados
 por ';'), --skip multi_model,refusal_ablation, --no-tests.
@@ -50,6 +52,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -63,9 +66,14 @@ for _p in (ROOT, HERE):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-import scenarios as scenarios_mod  # noqa: E402
-import versions  # noqa: E402
-from config import PIPELINE_VERSION  # noqa: E402
+try:
+    import scenarios as scenarios_mod  # noqa: E402
+    import versions  # noqa: E402
+    from config import PIPELINE_VERSION  # noqa: E402
+except ModuleNotFoundError as _e:  # Python do sistema em vez do .venv
+    sys.exit(f"ERRO: falta o módulo '{_e.name}'. Corre com o Python do virtualenv: "
+             ".venv/bin/python evaluation/run_battery.py ... (ou ./evaluation/run_battery.sh, "
+             "que também sobrevive ao fecho do terminal).")
 
 PY = sys.executable
 PHASES = ("preflight", "collect", "analyze", "redact")
@@ -314,11 +322,17 @@ class Battery:
             fh.write("$ " + " ".join(shlex.quote(str(c)) for c in step.cmd) + "\n\n")
             proc = subprocess.Popen([str(c) for c in step.cmd], cwd=self.root, env=env, text=True,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, errors="replace")
-            for line in proc.stdout:
-                fh.write(line)
-                if not self.args.quiet:
-                    print("   " + line, end="", flush=True)
-            code = proc.wait()
+            try:
+                for line in proc.stdout:
+                    fh.write(line)
+                    if not self.args.quiet:
+                        print("   " + line, end="", flush=True)
+                code = proc.wait()
+            except KeyboardInterrupt:
+                proc.terminate()
+                proc.wait()
+                step.seconds, step.status = time.time() - t, "interrompida"
+                raise
         step.seconds = time.time() - t
         step.status = "ok" if code == 0 else f"falhou (código {code})"
         print(f"  → {step.status} em {_fmt_s(step.seconds)}", flush=True)
@@ -353,7 +367,7 @@ class Battery:
             "- Baseline manual: `evaluation/baseline_manual/README.md` (cronometragem, fontes e relatórios por cenário).",
             "- Com as folhas de revisão preenchidas: `eq02_eq03.py analyze` e `eq04_review.py analyze`.",
             f"- Para o relatório usa só `{self.redacted.relative_to(self.root)}` e lê o texto final antes de o colar.",
-            f"- Volta a correr só a análise: `python evaluation/run_battery.py --phases analyze,redact --since {self.since}`.",
+            f"- Volta a correr só a análise: `./evaluation/run_battery.sh --phases analyze,redact --since {self.since}`.",
             "",
         ])
         path = self.out / "README.md"
@@ -416,19 +430,27 @@ def main(argv=None) -> int:
         if input("\nComeçar a recolha? [s/N] ").strip().lower() not in ("s", "sim", "y", "yes"):
             return 1
 
+    def _stop(signum, _frame):  # `run_battery.sh stop` (SIGTERM) termina como um Ctrl+C
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _stop)
+
     failed = False
-    for phase in phases:
-        for step in b.build(phase):
-            b.steps.append(step)
-            b.run_step(step)
-            if step.status.startswith("falhou"):
-                failed = True
-                if step.fatal:
-                    print(f"\nA etapa {step.name} falhou: a bateria para aqui (ver {b.out / step.log}).")
-                    break
-        else:
-            continue
-        break
+    try:
+        for phase in phases:
+            for step in b.build(phase):
+                b.steps.append(step)
+                b.run_step(step)
+                if step.status.startswith("falhou"):
+                    failed = True
+                    if step.fatal:
+                        print(f"\nA etapa {step.name} falhou: a bateria para aqui (ver {b.out / step.log}).")
+                        break
+            else:
+                continue
+            break
+    except KeyboardInterrupt:
+        failed = True
+        print("\nBateria interrompida: o resumo regista as etapas feitas até aqui.")
     readme = b.write_readme()
     print(f"\nResumo: {readme}")
     return 1 if failed else 0
