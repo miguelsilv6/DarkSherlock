@@ -218,9 +218,10 @@ def stage_scrape(r: PipelineResult, threads: int, scrape_fn=scrape_with_details)
                               + _term_coverage(r) + ".")
 
 
-def _key_terms(r: PipelineResult) -> list[str]:
+def _key_terms(r: PipelineResult, key: bool = True) -> list[str]:
+    """Termos-chave da query (key=True) ou só os de contexto (key=False)."""
     import text_match as tm
-    return [t.text for t in tm.query_terms(r.query) if t.key]
+    return [t.text for t in tm.query_terms(r.query) if t.key == key]
 
 
 def _term_coverage(r: PipelineResult) -> str:
@@ -249,21 +250,33 @@ _SCRAPE_LABELS = {
 }
 
 
-def _partial_pages(r: PipelineResult) -> list[str]:
-    """Páginas recolhidas com parte dos termos-chave: "- [título](url) — akira ✓ · portugal ✗".
+def _partial_pages(r: PipelineResult) -> list[tuple[str, bool]]:
+    """Páginas recolhidas com parte dos termos-chave, como (linha, possível homónimo).
 
-    Sem spam (degenerate) nem páginas sem nenhum termo-chave; mais termos primeiro.
+    Linha: "- [título](url) — akira ✓ · portugal ✗ · contexto: ransomware ✗". Sem spam
+    (degenerate) nem páginas sem nenhum termo-chave. Uma página sem nenhum termo de
+    contexto da query (ex.: "Akira Toriyama" para "Akira ransomware") é assinalada como
+    possível homónimo e vai para o fim; nada é escondido.
     """
-    keys = _key_terms(r)
+    keys, ctx = _key_terms(r), _key_terms(r, key=False)
     titles = {x.get("link"): x.get("title") for x in r.filtered}
-    rows = [(u, v) for u, v in r.relevance_scores.items()
-            if not v.get("degenerate") and v.get("key_found") and u not in r.scraped_content]
-    rows.sort(key=lambda x: (-x[1].get("key_found", 0), -x[1].get("score", 0)))
+    rows = []
+    for url, v in r.relevance_scores.items():
+        if v.get("degenerate") or not v.get("key_found") or url in r.scraped_content:
+            continue
+        found = v.get("found", [])
+        homonym = bool(ctx) and not any(c in found for c in ctx)
+        rows.append((homonym, -v.get("key_found", 0), -v.get("score", 0), url, found))
+    rows.sort(key=lambda x: x[:3])
     out = []
-    for url, v in rows:
-        marks = " · ".join(f"{k} {'✓' if k in v.get('found', []) else '✗'}" for k in keys)
+    for homonym, _, _, url, found in rows:
+        marks = " · ".join(f"{k} {'✓' if k in found else '✗'}" for k in keys)
+        if ctx:
+            marks += " · contexto: " + ", ".join(f"{c} {'✓' if c in found else '✗'}" for c in ctx)
+        if homonym:
+            marks += " — ⚠️ possível homónimo (nenhum termo de contexto)"
         title = re.sub(r"[\[\]()]", " ", titles.get(url) or "").strip()  # não partir o link Markdown
-        out.append(f"- {f'[{title}]({url})' if title else url} — {marks}")
+        out.append((f"- {f'[{title}]({url})' if title else url} — {marks}", homonym))
     return out
 
 
@@ -296,7 +309,9 @@ def no_evidence_report(r: PipelineResult) -> str:
         if not r.filtered:
             tips.append("Nenhum título parecia relevante: reformula a pesquisa ou aumenta o n.º de resultados nas Settings.")
     if r.filtered:
-        parts = [f"{n} {_SCRAPE_LABELS.get(k, k)}" for k, n in sorted(r.scrape_outcomes.items(), key=lambda x: -x[1])]
+        # "blocked_safety" é contado à parte (r.safety_blocked), na linha da salvaguarda.
+        parts = [f"{n} {_SCRAPE_LABELS.get(k, k)}" for k, n in sorted(r.scrape_outcomes.items(), key=lambda x: -x[1])
+                 if k != "blocked_safety"]
         if r.safety_blocked:
             parts.append(f"{r.safety_blocked} bloqueada(s) pela salvaguarda ética (nunca pedidas)")
         lines.append("- **Recolha (Etapa 5):** " + ("; ".join(parts) or "nenhuma página pedida") + ".")
@@ -312,14 +327,15 @@ def no_evidence_report(r: PipelineResult) -> str:
                          f"exigidos{_term_coverage(r)}.")
             partial = _partial_pages(r)
             if partial:
-                tips.append("Abre as páginas com evidência parcial no Tor Browser: falam de parte do alvo "
-                            "(ex.: o grupo), mas não confirmam o resto — não são evidência por si só.")
-            else:
+                tips.append("Abre as páginas com evidência parcial no Tor Browser e confirma se falam mesmo do alvo "
+                            "(o mesmo nome pode ser outra coisa) — não são evidência por si só.")
+            if all(homonym for _, homonym in partial):
                 tips.append("As páginas recolhidas não falam do alvo: confirma o nome (grafia, alias do grupo) "
                             "ou procura só pelo nome, sem outras palavras.")
     if partial:
         lines += ["", "### Páginas com evidência parcial", "",
-                  "Têm parte dos termos-chave da query (✓ encontrado, ✗ em falta):", ""] + partial
+                  "Têm parte dos termos-chave da query (✓ encontrado, ✗ em falta); confirma no Tor Browser "
+                  "se falam mesmo do alvo:", ""] + [line for line, _ in partial]
     if r.warnings:
         lines += ["", "### Avisos", ""] + [f"- {w}" for w in r.warnings]
     lines += ["", "### O que fazer", ""] + [f"- {t}" for t in (tips or ["Repete a investigação mais tarde."])]
