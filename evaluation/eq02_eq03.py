@@ -220,7 +220,9 @@ def load_darksherlock_runs(pattern: str, scenario: str, model: str | None = None
                 found_by[u] = set()
                 titles[u] = (r.get("title") or "", r["link"])
             found_by[u].update(r.get("found_by", []))
-        top20 = [normalize_url(s["link"]) for s in data.get("sources", [])][:TOP_K]
+        # EQ-03 mede o ranking do LLM: as vagas preenchidas por termos (pipeline 2.3+) não contam.
+        top20 = [normalize_url(s["link"]) for s in data.get("sources", [])
+                 if s.get("selected_by") != "terms"][:TOP_K]
         runs.append({
             "file": Path(path).name, "retrieved": retrieved, "top20": top20,
             "first20": retrieved[:TOP_K], "found_by": found_by, "titles": titles,

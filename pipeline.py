@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import time
 import uuid
@@ -76,6 +77,7 @@ class PipelineResult:
     engine_status: dict = field(default_factory=dict)
     search_stats: dict = field(default_factory=dict)
     stage4_outcome: str | None = None
+    stage4_padded: int = 0             # vagas da Etapa 4 preenchidas por termos da query (não pelo LLM)
     filtered: list = field(default_factory=list)
     scrape_outcomes: dict = field(default_factory=dict)
     safety_blocked: int = 0
@@ -183,7 +185,15 @@ def stage_filter(r: PipelineResult, llm, max_scrape: int) -> None:
         # A query original: a refinada só serve para a pesquisa.
         filtered = llm_module.filter_results(llm, r.query, r.search_results)
         r.stage4_outcome = llm_module.last_filter_outcome
-        r.filtered = list(filtered)[:max_scrape]
+        how = "llm" if r.stage4_outcome == "ranked" else r.stage4_outcome  # contingências não são escolha do LLM
+        chosen = [dict(x, selected_by=how) for x in list(filtered)[:max_scrape]]
+        extra = []
+        if r.stage4_outcome == "ranked":
+            # O LLM deixou vagas: completam-se com resultados que têm termos-chave no título/URL.
+            extra = [dict(x, selected_by="terms") for x in
+                     llm_module.pad_with_term_matches(r.query, chosen, r.search_results, max_scrape)]
+        r.stage4_padded = len(extra)
+        r.filtered = chosen + extra
 
 
 def stage_scrape(r: PipelineResult, threads: int, scrape_fn=scrape_with_details) -> None:
@@ -208,10 +218,14 @@ def stage_scrape(r: PipelineResult, threads: int, scrape_fn=scrape_with_details)
                               + _term_coverage(r) + ".")
 
 
+def _key_terms(r: PipelineResult) -> list[str]:
+    import text_match as tm
+    return [t.text for t in tm.query_terms(r.query) if t.key]
+
+
 def _term_coverage(r: PipelineResult) -> str:
     """" (akira: 0 de 3 páginas; portugal: 3 de 3)" — quantas páginas recolhidas têm cada termo-chave."""
-    import text_match as tm
-    keys = [t.text for t in tm.query_terms(r.query) if t.key]
+    keys = _key_terms(r)
     scores = [v for v in r.relevance_scores.values() if not v.get("degenerate")]
     if not keys or not scores:
         return ""
@@ -235,6 +249,24 @@ _SCRAPE_LABELS = {
 }
 
 
+def _partial_pages(r: PipelineResult) -> list[str]:
+    """Páginas recolhidas com parte dos termos-chave: "- [título](url) — akira ✓ · portugal ✗".
+
+    Sem spam (degenerate) nem páginas sem nenhum termo-chave; mais termos primeiro.
+    """
+    keys = _key_terms(r)
+    titles = {x.get("link"): x.get("title") for x in r.filtered}
+    rows = [(u, v) for u, v in r.relevance_scores.items()
+            if not v.get("degenerate") and v.get("key_found") and u not in r.scraped_content]
+    rows.sort(key=lambda x: (-x[1].get("key_found", 0), -x[1].get("score", 0)))
+    out = []
+    for url, v in rows:
+        marks = " · ".join(f"{k} {'✓' if k in v.get('found', []) else '✗'}" for k in keys)
+        title = re.sub(r"[\[\]()]", " ", titles.get(url) or "").strip()  # não partir o link Markdown
+        out.append(f"- {f'[{title}]({url})' if title else url} — {marks}")
+    return out
+
+
 def no_evidence_report(r: PipelineResult) -> str:
     """Relatório quando não há nenhuma fonte: o que aconteceu em cada etapa e o que fazer.
 
@@ -244,7 +276,7 @@ def no_evidence_report(r: PipelineResult) -> str:
              f"Não houve nenhuma página com conteúdo sobre **{r.query}**, por isso não foi gerado "
              "nenhum relatório (o modelo não é usado sem evidência, para não inventar).", "",
              "### O que aconteceu", ""]
-    tips = []
+    tips, partial = [], []
     engines_ok = sum(1 for v in r.engine_status.values() if v == "ok")
     with_results = sum(1 for v in r.search_stats.values() if v.get("status") == "ok_results")
     lines.append(f"- **Pesquisa:** {engines_ok} de {len(r.engine_status)} motores responderam, "
@@ -257,8 +289,10 @@ def no_evidence_report(r: PipelineResult) -> str:
             tips.append("Os motores não devolveram resultados para esta pesquisa: usa menos palavras, em inglês, "
                         "com o nome do grupo ou da entidade.")
     else:
+        how = (f"{len(r.filtered) - r.stage4_padded} pelo modelo + {r.stage4_padded} por termos da query; "
+               if r.stage4_padded else "")
         lines.append(f"- **Seleção (Etapa 4):** {len(r.filtered)} resultado(s) escolhido(s) para recolha "
-                     f"(desfecho: `{r.stage4_outcome}`).")
+                     f"({how}desfecho: `{r.stage4_outcome}`).")
         if not r.filtered:
             tips.append("Nenhum título parecia relevante: reformula a pesquisa ou aumenta o n.º de resultados nas Settings.")
     if r.filtered:
@@ -276,8 +310,16 @@ def no_evidence_report(r: PipelineResult) -> str:
         if r.pages_valid and not r.scraped_content:
             lines.append(f"- **Relevância:** {r.pages_valid} página(s) recolhida(s), nenhuma menciona os termos "
                          f"exigidos{_term_coverage(r)}.")
-            tips.append("As páginas recolhidas não falam do alvo: confirma o nome (grafia, alias do grupo) "
-                        "ou procura só pelo nome, sem outras palavras.")
+            partial = _partial_pages(r)
+            if partial:
+                tips.append("Abre as páginas com evidência parcial no Tor Browser: falam de parte do alvo "
+                            "(ex.: o grupo), mas não confirmam o resto — não são evidência por si só.")
+            else:
+                tips.append("As páginas recolhidas não falam do alvo: confirma o nome (grafia, alias do grupo) "
+                            "ou procura só pelo nome, sem outras palavras.")
+    if partial:
+        lines += ["", "### Páginas com evidência parcial", "",
+                  "Têm parte dos termos-chave da query (✓ encontrado, ✗ em falta):", ""] + partial
     if r.warnings:
         lines += ["", "### Avisos", ""] + [f"- {w}" for w in r.warnings]
     lines += ["", "### O que fazer", ""] + [f"- {t}" for t in (tips or ["Repete a investigação mais tarde."])]
@@ -368,6 +410,8 @@ def investigation_record(r: PipelineResult, preset_label: str | None = None, **e
         "search_stats": r.search_stats,
         # Como terminou a Etapa 4: só "ranked" é um ranking do LLM (EQ-03).
         "stage4_outcome": r.stage4_outcome,
+        # Quantos do Top-K vieram do preenchimento por termos ("selected_by": "terms" em sources).
+        "stage4_padded": r.stage4_padded,
         # Desfecho do pedido de cada página do Top-K e bloqueios da salvaguarda ética.
         "scrape_outcomes": r.scrape_outcomes,
         "safety_blocked": r.safety_blocked,
@@ -402,6 +446,7 @@ def audit_record(r: PipelineResult, preset_label: str | None = None, **extra) ->
         "engines_active": r.active_engines,
         "results_found": len(r.search_results),
         "results_filtered": len(r.filtered),
+        "results_padded": r.stage4_padded,
         "results_scraped": len(r.scraped_content),
         "summary_length_chars": len(r.summary),
         "summary_quality_ok": r.summary_quality.get("ok") if r.summary_quality else None,
