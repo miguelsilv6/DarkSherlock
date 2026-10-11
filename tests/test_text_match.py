@@ -39,7 +39,7 @@ def test_id_variants(text):
 
 
 def test_accents_and_punctuation():
-    m = tm.match("A organização “LockBit,” publicou", tm.query_terms("organizacao lockbit"))
+    m = tm.match("A Conceição “LockBit,” publicou", tm.query_terms("conceicao lockbit"))
     assert m.key_found == 2
 
 

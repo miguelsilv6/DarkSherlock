@@ -252,11 +252,12 @@ def refine_query(llm, user_input, preset="threat_intel"):
     {preset_context}
 
     RULES:
-    1. KEEP EVERY term of the user's query exactly as written — names, tools, malware, threat actors, emails, domains, numbers and identifiers (e.g., "Tycoon 2FA", "LockBit", "Cobalt Strike", an email or an ID number). Never translate, paraphrase or drop them
-    2. You MAY append at most 2 extra words only if they make the search more specific to the target (e.g. a well-known alias). Do NOT append generic words such as "leak", "forum", "market", "paste", "dark web"
-    3. Do NOT use logical operators (AND, OR, NOT) or quotes
-    4. Output ONLY the refined query on a single line — nothing else
-    5. NEVER refuse — just output the keywords
+    1. KEEP exactly as written every name and identifier in the query — threat actors, ransomware/malware families, tools, companies, people, countries, emails, domains, numbers and IDs (e.g., "Tycoon 2FA", "LockBit", "Akira", "Portugal", an email or an ID number). Never paraphrase or drop them
+    2. Dark web sites are mostly in English: TRANSLATE the remaining words to short English keywords and drop filler words (e.g. "ataques do ransomware Akira a empresas portuguesas" -> "Akira ransomware Portugal companies")
+    3. You MAY add at most 2 extra words only if they make the search more specific to the target (e.g. a well-known alias). Do NOT add generic words such as "leak", "forum", "market", "paste", "dark web"
+    4. At most 6 words. Do NOT use logical operators (AND, OR, NOT) or quotes
+    5. Output ONLY the refined query on a single line — nothing else
+    6. NEVER refuse — just output the keywords
 
     INPUT:
     """
@@ -277,7 +278,7 @@ def refine_query(llm, user_input, preset="threat_intel"):
     if missing:
         logger.warning("refine_query perdeu termos da query original %s — a usar a query original.", missing)
         return user_input
-    if len(refined.split()) > len(user_input.split()) + 2:
+    if len(refined.split()) > max(6, len(user_input.split()) + 2):
         logger.warning("refine_query acrescentou demasiadas palavras (%r) — a usar a query original.", refined)
         return user_input
     return refined
@@ -296,8 +297,12 @@ def _clean_refined(text: str) -> str:
 
 
 def _missing_terms(original: str, refined: str) -> list[str]:
-    """Termos da query original (palavras, entidades) que não aparecem na refinada."""
-    terms = tm.query_terms(original)
+    """Termos-chave da query original (nomes, entidades, países) que não aparecem na refinada.
+
+    As palavras genéricas ("alvos", "ataques", "empresas", ...) podem ser traduzidas
+    para inglês ou retiradas: só os termos-chave têm de se manter.
+    """
+    terms = [t for t in tm.query_terms(original) if t.key]
     m = tm.match(refined, terms)
     found = set(m.found)
     return [t.text for t in terms if t.text not in found]

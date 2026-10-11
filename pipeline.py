@@ -219,10 +219,79 @@ def _term_coverage(r: PipelineResult) -> str:
     return " (" + "; ".join(parts) + ")"
 
 
+# Desfecho do pedido de cada página (scrape.fetch_page) em linguagem corrente.
+_SCRAPE_LABELS = {
+    "ok": "recolhidas com texto",
+    "timeout": "sem resposta a tempo (timeout)",
+    "connection_error": "ligação falhada (serviço .onion em baixo ou circuito Tor)",
+    "http_error": "erro HTTP",
+    "non_html": "não eram páginas HTML",
+    "challenge_or_error": "página de erro ou captcha",
+    "too_short": "texto curto demais (página vazia ou feita só de JavaScript)",
+    "blocked_redirect": "redirecionadas para um endereço bloqueado pela salvaguarda",
+    "too_many_redirects": "redirecionamentos a mais",
+    "adapter_failed": "falha do adaptador do fórum",
+    "error": "outro erro",
+}
+
+
+def no_evidence_report(r: PipelineResult) -> str:
+    """Relatório quando não há nenhuma fonte: o que aconteceu em cada etapa e o que fazer.
+
+    Escrito a partir dos dados do pipeline (sem LLM: sem evidência não há o que analisar).
+    """
+    lines = ["## Sem evidência suficiente para análise", "",
+             f"Não houve nenhuma página com conteúdo sobre **{r.query}**, por isso não foi gerado "
+             "nenhum relatório (o modelo não é usado sem evidência, para não inventar).", "",
+             "### O que aconteceu", ""]
+    tips = []
+    engines_ok = sum(1 for v in r.engine_status.values() if v == "ok")
+    with_results = sum(1 for v in r.search_stats.values() if v.get("status") == "ok_results")
+    lines.append(f"- **Pesquisa:** {engines_ok} de {len(r.engine_status)} motores responderam, "
+                 f"{with_results} com resultados; {len(r.search_results)} resultados depois da limpeza "
+                 f"(pesquisa enviada: `{r.refined_query or r.query}`).")
+    if not r.search_results:
+        if r.engine_status and not engines_ok:
+            tips.append("Nenhum motor respondeu: confirma que o Tor está a correr e tenta de novo (Settings → rodar circuito).")
+        else:
+            tips.append("Os motores não devolveram resultados para esta pesquisa: usa menos palavras, em inglês, "
+                        "com o nome do grupo ou da entidade.")
+    else:
+        lines.append(f"- **Seleção (Etapa 4):** {len(r.filtered)} resultado(s) escolhido(s) para recolha "
+                     f"(desfecho: `{r.stage4_outcome}`).")
+        if not r.filtered:
+            tips.append("Nenhum título parecia relevante: reformula a pesquisa ou aumenta o n.º de resultados nas Settings.")
+    if r.filtered:
+        parts = [f"{n} {_SCRAPE_LABELS.get(k, k)}" for k, n in sorted(r.scrape_outcomes.items(), key=lambda x: -x[1])]
+        if r.safety_blocked:
+            parts.append(f"{r.safety_blocked} bloqueada(s) pela salvaguarda ética (nunca pedidas)")
+        lines.append("- **Recolha (Etapa 5):** " + ("; ".join(parts) or "nenhuma página pedida") + ".")
+        out = r.scrape_outcomes
+        if out.get("timeout", 0) + out.get("connection_error", 0) >= max(1, len(r.filtered) // 2):
+            tips.append("A maioria das páginas não respondeu: os serviços .onion mudam e caem com frequência — "
+                        "repete mais tarde ou com outro circuito Tor.")
+        if out.get("too_short", 0) + out.get("challenge_or_error", 0):
+            tips.append("Algumas páginas não tinham texto recolhível (captcha ou feitas só de JavaScript — é o caso "
+                        "de vários leak sites de ransomware): abre-as manualmente no Tor Browser a partir da lista de fontes.")
+        if r.pages_valid and not r.scraped_content:
+            lines.append(f"- **Relevância:** {r.pages_valid} página(s) recolhida(s), nenhuma menciona os termos "
+                         f"exigidos{_term_coverage(r)}.")
+            tips.append("As páginas recolhidas não falam do alvo: confirma o nome (grafia, alias do grupo) "
+                        "ou procura só pelo nome, sem outras palavras.")
+    if r.warnings:
+        lines += ["", "### Avisos", ""] + [f"- {w}" for w in r.warnings]
+    lines += ["", "### O que fazer", ""] + [f"- {t}" for t in (tips or ["Repete a investigação mais tarde."])]
+    return "\n".join(lines)
+
+
 def stage_summary(r: PipelineResult, llm, custom_instructions: str = "") -> None:
     with _Timer(r, "generate_summary"):
         llm_module.last_ioc_check = {}
         llm_module.last_summary_quality = {}
+        if not r.scraped_content:
+            r.summary = no_evidence_report(r)
+            r.summary_quality = {"ok": False, "problems": ["no_evidence"]}
+            return
         r.summary = llm_module.generate_summary(
             llm, r.query, r.scraped_content, preset=r.preset, custom_instructions=custom_instructions,
         )
