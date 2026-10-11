@@ -156,3 +156,36 @@ def test_example_file_is_valid_and_fictitious():
 def test_local_scenarios_file_is_gitignored():
     r = subprocess.run(["git", "check-ignore", "-q", "evaluation/scenarios.local.json"], cwd=ROOT)
     assert r.returncode == 0
+
+
+def test_public_cases_file_is_valid_and_has_no_personal_data():
+    data = json.loads((ROOT / "evaluation" / "scenarios.public.json").read_text(encoding="utf-8"))
+    assert S.validate(data["scenarios"]) == [] and [x["id"] for x in data["scenarios"]] == S.IDS
+    assert R._public_cases_problem(json.dumps(data)) is None
+    for x in data["scenarios"]:
+        assert x.get("label") and x.get("fonte_publica")
+
+
+def test_check_staged_accepts_public_cases_but_not_with_personal_data(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "evaluation").mkdir(parents=True)
+    _git(repo, "init", "-q")
+    public = json.loads((ROOT / "evaluation" / "scenarios.public.json").read_text(encoding="utf-8"))
+    local = tmp_path / "scenarios.local.json"
+    local.write_text(json.dumps(public), encoding="utf-8")   # os termos dos casos públicos são regras de rasura
+    env = {**os.environ, "DARKSHERLOCK_SCENARIOS_FILE": str(local)}
+    target = repo / "evaluation" / "scenarios.public.json"
+
+    def staged_check():
+        _git(repo, "add", "evaluation/scenarios.public.json")
+        return subprocess.run([sys.executable, str(ROOT / "evaluation" / "redact.py"), "--check-staged"],
+                              cwd=repo, env=env, capture_output=True, text=True)
+
+    target.write_text(json.dumps(public), encoding="utf-8")
+    assert staged_check().returncode == 0
+    for x in public["scenarios"]:
+        if x["id"] == "C1":
+            x["query"] = "eu.proprio@exemplo.pt"
+    target.write_text(json.dumps(public), encoding="utf-8")
+    r = staged_check()
+    assert r.returncode == 1 and "C1 com dados pessoais" in r.stderr and "eu.proprio" not in r.stderr

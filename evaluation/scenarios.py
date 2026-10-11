@@ -9,7 +9,11 @@ NUNCA entram no Git:
   - evaluation/scenarios.local.json   — cenários reais (no .gitignore; o
     caminho pode ser mudado com DARKSHERLOCK_SCENARIOS_FILE);
   - evaluation/scenarios.example.json — formato, com valores fictícios
-    (versionado).
+    (versionado);
+  - evaluation/scenarios.public.json  — os 12 casos públicos (versionado por
+    decisão do investigador), com C1/C3 por preencher: copia-o para
+    scenarios.local.json e preenche aí os teus dados (o hook pre-commit
+    recusa o ficheiro público com dados pessoais).
 
 Se o ficheiro local existir, os cenários são os dele (os IDs A1–D3 que não
 estiverem lá não correm); senão usam-se os 12 sintéticos da Tabela 12. Cada

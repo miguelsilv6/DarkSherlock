@@ -55,6 +55,26 @@ FORBIDDEN_PATHS = [
     re.compile(r"^evaluation/baseline_manual/(sources|reports)/"),
 ]
 
+# Casos públicos versionados por decisão do investigador: podem ter os termos dos
+# cenários, mas os cenários dos dados do próprio investigador (C1, C3) ficam
+# sempre por preencher — o hook recusa o ficheiro com dados pessoais.
+PUBLIC_CASES = "evaluation/scenarios.public.json"
+OWN_DATA_IDS = ("C1", "C3")
+PLACEHOLDER = "PREENCHER"
+
+
+def _public_cases_problem(blob: str) -> str | None:
+    try:
+        data = json.loads(blob)
+        rows = data["scenarios"] if isinstance(data, dict) else data
+    except (ValueError, KeyError, TypeError):
+        return "não é um ficheiro de cenários válido"
+    filled = [r.get("id") for r in rows if r.get("id") in OWN_DATA_IDS and PLACEHOLDER not in str(r.get("query", ""))]
+    if filled:
+        return (f"{', '.join(filled)} com dados pessoais — preenche-os só em scenarios.local.json "
+                f"(aqui ficam \"{PLACEHOLDER}\")")
+    return None
+
 RE_ONION = re.compile(r"\b(?:[a-z2-7]{56}|[a-z2-7]{16})\.onion\b", re.IGNORECASE)
 # "@" e as ofuscações entre parênteses; _AT_LOOSE aceita também " at " solto
 # (só nos termos dos cenários: no texto em geral apanharia "hosted at site.com").
@@ -261,10 +281,15 @@ def cmd_check_staged(args) -> int:
         if any(rx.search(name) for rx in FORBIDDEN_PATHS):
             problems.append(f"{name}: caminho com dados reais/sensíveis — não pode ser versionado")
             continue
-        if not rules or Path(name).suffix.lower() not in TEXT_SUFFIXES | {".py"}:
+        if (not rules and name != PUBLIC_CASES) or Path(name).suffix.lower() not in TEXT_SUFFIXES | {".py"}:
             continue
         blob = subprocess.run(["git", "show", f":{name}"], capture_output=True, text=True,
                               errors="replace").stdout
+        if name == PUBLIC_CASES:
+            why = _public_cases_problem(blob)
+            if why:
+                problems.append(f"{name}: {why}")
+            continue
         folded = _fold(blob)
         for rule in rules:
             if rule.pattern.search(folded):
