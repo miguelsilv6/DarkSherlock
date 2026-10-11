@@ -454,6 +454,35 @@ def filter_results(llm, query, results):
     return top_results
 
 
+def pad_with_term_matches(query: str, selected: list, results: list, limit: int) -> list:
+    """
+    Completa a escolha da Etapa 4 até `limit` com resultados que o LLM não
+    escolheu mas cujo título + URL tem pelo menos 1 termo-chave da query.
+
+    Um modelo pequeno escolhe muitas vezes poucos resultados (ex.: 4 de 48 com
+    10 vagas): as vagas que sobram vão para os candidatos com mais termos-chave
+    (depois pontuação, depois a ordem original). A Etapa 5 continua a exigir o
+    critério completo sobre o texto, por isso isto só aumenta o que se recolhe.
+
+    Devolve só os resultados acrescentados (sem os já escolhidos).
+    """
+    room = limit - len(selected)
+    terms = tm.query_terms(query)
+    if room <= 0 or not any(t.key for t in terms):
+        return []
+    chosen = {r.get("link") for r in selected}
+    scored = []
+    for pos, r in enumerate(results):
+        if r.get("link") in chosen:
+            continue
+        chosen.add(r.get("link"))
+        m = tm.match(f"{r.get('title', '')} {r.get('link', '')}", terms)
+        if m.key_found:
+            scored.append((-m.key_found, -m.score, pos, r))
+    scored.sort(key=lambda x: x[:3])
+    return [r for *_, r in scored[:room]]
+
+
 def _generate_final_string(results, truncate=False):
     """
     Converte a lista de resultados de pesquisa numa string formatada,

@@ -72,4 +72,4 @@ def test_no_evidence_report_when_pages_miss_terms():
     r.relevance_scores = {"a": {"found": ["portugal"], "key_found": 1}}
     text = pipeline.no_evidence_report(r)
     assert "akira: 0 de 1 páginas; portugal: 1 de 1 páginas" in text
-    assert "alias do grupo" in text
+    assert "- a — akira ✗ · portugal ✓" in text and "evidência parcial no Tor Browser" in text
