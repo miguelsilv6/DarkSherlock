@@ -32,8 +32,9 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 # investigações sem este campo são dessa versão. "2.0" = pipeline revisto:
 # pesquisa limpa, relevância sobre o texto integral, relatório fundamentado,
 # pipeline único em pipeline.py. "2.1" = com 1 ou 2 termos-chave a Etapa 5
-# exige todos; controlo de qualidade do relatório).
-PIPELINE_VERSION = "2.1"
+# exige todos; controlo de qualidade do relatório. "2.2" = palavras genéricas
+# PT/EN como contexto, variantes de países, refinação traduz para inglês).
+PIPELINE_VERSION = "2.2"
 
 # Parâmetros de inferência dos modelos Ollama. num_ctx tem omissão 8192 (ver
 # abaixo); os restantes só se passam se definidos. Para replicar por completo os

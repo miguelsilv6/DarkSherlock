@@ -48,6 +48,26 @@ CONTEXT = {
     "api", "key", "keys", "wiki", "access", "broker", "brokers", "sale", "sell", "selling", "buy", "shop",
     "fuga", "fugas", "venda", "mercado", "grupo", "nif", "email", "mail", "password", "passwords", "login",
     "victim", "victims", "vitima", "vitimas", "blog", "news", "2024", "2025", "2026", "2027",
+    # palavras genéricas de uma pergunta de investigação (PT/EN): descrevem o que se
+    # procura, não o alvo — "alvos", "ataques" ou "empresas" não identificam nada e as
+    # páginas da dark web, quase todas em inglês, nunca as usam
+    "alvo", "alvos", "ataque", "ataques", "atacado", "atacada", "atacados", "atacadas", "atacar",
+    "empresa", "empresas", "organizacao", "organizacoes", "entidade", "entidades", "instituicao",
+    "instituicoes", "informacao", "informacoes", "lista", "listas", "noticia", "noticias", "recente",
+    "recentes", "novo", "novos", "nova", "novas", "relacionado", "relacionados", "relacionada",
+    "relacionadas", "ligado", "ligados", "atividade", "atividades", "publicado", "publicados", "exposto",
+    "expostos", "target", "targets", "targeted", "attack", "attacks", "attacked", "company", "companies",
+    "organization", "organizations", "organisation", "organisations", "recent", "latest", "new", "list",
+    "related", "activity", "exposed", "published",
+}
+
+# Variantes de países: o termo-chave "portugal" também é encontrado como
+# "Portuguese", "português", "portuguesas", ... ou num domínio .pt. As entradas
+# são prefixos de palavra; as que começam por "." são domínios de topo.
+ALIASES = {
+    "portugal": ("portugal", "portugues", ".pt"),
+    "brasil": ("brasil", "brazil", ".br"),
+    "espanha": ("espanha", "espana", "spain", "spanish", "espanhol"),
 }
 
 CONTEXT_WEIGHT = 0.5
@@ -81,7 +101,7 @@ def _digits_only(text: str) -> str:
 @dataclass
 class Term:
     text: str              # forma normalizada a procurar
-    kind: str              # "phrase" | "email" | "id" | "domain" | "word"
+    kind: str              # "phrase" | "email" | "id" | "domain" | "word" | "alias" (país e variantes)
     key: bool              # termo-chave (True) ou de contexto (False)
 
     @property
@@ -131,11 +151,32 @@ def query_terms(query: str) -> list[Term]:
             continue  # descarta palavras curtas, exceto códigos como "c2"
         if w in STOPWORDS:
             continue
+        canonical = _alias_of(w)
+        if canonical:
+            add(canonical, "alias", True)
+            continue
         add(w, "word", w not in CONTEXT)
     return terms
 
 
+def _alias_of(word: str) -> str | None:
+    """País canónico de uma palavra ("portuguesas" -> "portugal"), ou None."""
+    for canonical, variants in ALIASES.items():
+        if any(not v.startswith(".") and word.startswith(v) for v in variants):
+            return canonical
+    return None
+
+
+def _alias_pattern(canonical: str) -> str:
+    parts = []
+    for v in ALIASES[canonical]:
+        parts.append(rf"(?<=\w){re.escape(v)}(?![\w-])" if v.startswith(".") else rf"(?<![\w]){re.escape(v)}")
+    return "|".join(parts)
+
+
 def _found(term: Term, text: str, digits: str) -> bool:
+    if term.kind == "alias":
+        return re.search(_alias_pattern(term.text), text) is not None
     if term.kind == "id":
         return term.text in digits
     if term.kind in ("email", "domain", "phrase"):
@@ -200,7 +241,10 @@ def best_window(text: str, terms: list[Term], size: int) -> str:
     for term in terms:
         if term.kind == "id":
             continue
-        pat = re.escape(term.text) if term.kind != "word" else rf"(?<![\w]){re.escape(term.text)}"
+        if term.kind == "alias":
+            pat = _alias_pattern(term.text)
+        else:
+            pat = re.escape(term.text) if term.kind != "word" else rf"(?<![\w]){re.escape(term.text)}"
         positions += [(mm.start(), term.weight) for mm in re.finditer(pat, folded)]
     if not positions:
         return text[:size]
