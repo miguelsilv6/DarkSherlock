@@ -115,3 +115,18 @@ def test_small_model_warning_is_visible(fakes, monkeypatch):
     rec = json.loads(next((fakes / "investigations").glob("investigation_*.json")).read_text(encoding="utf-8"))
     assert rec["model"] == local_models.LIGHTEST_MODEL
     assert any("pequeno demais" in w for w in rec["warnings"])
+
+
+def test_no_deprecated_use_container_width():
+    """O Streamlit está a remover use_container_width (substituído por width=)."""
+    offenders = [str(p.relative_to(ROOT)) for p in [ROOT / "Home.py", *sorted((ROOT / "pages").glob("*.py"))]
+                 if "use_container_width" in p.read_text(encoding="utf-8")]
+    assert offenders == []
+
+
+@pytest.mark.parametrize("page", sorted(p.name for p in (ROOT / "pages").glob("*.py")) + ["Home.py"])
+def test_every_page_renders(fakes, page):
+    path = ROOT / page if page == "Home.py" else ROOT / "pages" / page
+    at = AppTest.from_file(str(path), default_timeout=60)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]

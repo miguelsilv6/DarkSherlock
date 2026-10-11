@@ -207,7 +207,7 @@ hc1, hc2, hc3 = st.columns(3)
 
 # LLM Connection
 with hc1:
-    if st.button("Check LLM Connection", use_container_width=True):
+    if st.button("Check LLM Connection", width="stretch"):
         with st.spinner(f"Testing {_current_model}..."):
             result = check_llm_health(_current_model)
         if result["status"] == "up":
@@ -217,7 +217,7 @@ with hc1:
 
 # Search Engines
 with hc2:
-    if st.button("Check Search Engines", use_container_width=True):
+    if st.button("Check Search Engines", width="stretch"):
         with st.spinner("Checking Tor proxy..."):
             tor_result = check_tor_proxy()
         if tor_result["status"] == "down":
@@ -246,7 +246,7 @@ with hc2:
 
 # Tor Circuit Rotation
 with hc3:
-    if st.button("Rodar Circuito Tor", use_container_width=True):
+    if st.button("Rodar Circuito Tor", width="stretch"):
         with st.spinner("A solicitar novo circuito Tor..."):
             result = rotate_tor_circuit()
         if result["status"] == "rotated":

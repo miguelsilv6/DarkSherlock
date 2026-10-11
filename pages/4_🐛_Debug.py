@@ -73,11 +73,11 @@ st.caption("Diagnóstico em tempo real — logs de auditoria e aplicação")
 col_refresh, col_clear_app, col_clear_audit, col_clear_all = st.columns(4)
 
 with col_refresh:
-    refresh = st.button("🔄 Atualizar", use_container_width=True,
+    refresh = st.button("🔄 Atualizar", width="stretch",
                         help="Recarrega os ficheiros de log do disco")
 
 with col_clear_app:
-    if st.button("🗑 Limpar App Log", use_container_width=True,
+    if st.button("🗑 Limpar App Log", width="stretch",
                  help="Apaga o conteúdo de logs/app.log e as cópias rodadas"):
         _clear_app_log()
         st.success("logs/app.log limpo.")
@@ -85,7 +85,7 @@ with col_clear_app:
         st.rerun()
 
 with col_clear_audit:
-    if st.button("🗑 Limpar Audit Log", use_container_width=True,
+    if st.button("🗑 Limpar Audit Log", width="stretch",
                  help="Apaga o conteúdo de logs/audit.jsonl"):
         if _AUDIT_LOG.exists():
             _AUDIT_LOG.write_text("", encoding="utf-8")
@@ -94,7 +94,7 @@ with col_clear_audit:
         st.rerun()
 
 with col_clear_all:
-    if st.button("💣 Limpar Tudo", use_container_width=True,
+    if st.button("💣 Limpar Tudo", width="stretch",
                  help="Apaga todos os ficheiros de log"):
         _clear_app_log()
         if _AUDIT_LOG.exists():
@@ -138,7 +138,7 @@ else:
             "Erros": len(e.get("errors", [])),
         })
 
-    st.dataframe(summary_rows, use_container_width=True)
+    st.dataframe(summary_rows, width="stretch")
 
     # Expansores com o JSON completo de cada entrada, para diagnóstico
     # detalhado (engines activas, audit_id, hashes, etc.)
@@ -219,7 +219,7 @@ else:
         data=raw_log.encode("utf-8"),
         file_name=f"app_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
         mime="text/plain",
-        use_container_width=False,
+        width="content",
     )
 
 st.divider()

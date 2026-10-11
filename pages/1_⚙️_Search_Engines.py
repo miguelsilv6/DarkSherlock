@@ -138,7 +138,7 @@ if "engine_health" not in st.session_state:
 st.subheader("Connection Test")
 
 # Botão que desencadeia o teste manual de todos os engines
-if st.button("Test All Engines", type="primary", use_container_width=True):
+if st.button("Test All Engines", type="primary", width="stretch"):
     # Passo 1: Verifica primeiro se o proxy Tor está operacional
     # Sem Tor, os sites .onion não são alcançáveis, pelo que não faz sentido
     # testar os engines

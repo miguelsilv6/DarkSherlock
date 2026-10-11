@@ -9,8 +9,9 @@ requests>=2.31
 curl_cffi>=0.7.0
 # Extração de HTML (o pacote "bs4" do PyPI é só um alias de beautifulsoup4)
 beautifulsoup4>=4.12
-# Interface: st.pills exige Streamlit >= 1.40
-streamlit>=1.40
+# Interface: st.pills (>= 1.40) e width="stretch" em botões e tabelas (>= 1.48;
+# substitui use_container_width, que o Streamlit está a remover)
+streamlit>=1.48
 python-dotenv>=1.0
 # LLM via Ollama (num_ctx, num_predict, seed) e LangChain
 langchain-ollama>=0.2

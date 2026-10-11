@@ -81,7 +81,7 @@ if saved_investigations:
     )
     if selected_inv_label != "(none)":
         selected_inv_idx = inv_labels.index(selected_inv_label)
-        if st.sidebar.button("Load", use_container_width=True, key="load_inv_btn"):
+        if st.sidebar.button("Load", width="stretch", key="load_inv_btn"):
             st.session_state["loaded_investigation"] = saved_investigations[selected_inv_idx]
             st.session_state.pop("pipeline_complete", None)
             st.rerun()
@@ -206,7 +206,7 @@ if "loaded_investigation" in st.session_state and not run_button:
         data=_inv_pdf_bytes,
         file_name=f"relatorio_{inv.get('audit_id', 'inv')[:8]}_{_inv_now}.pdf",
         mime="application/pdf",
-        use_container_width=True,
+        width="stretch",
         key="loaded_dl_pdf",
     )
     _dl2.download_button(
@@ -214,7 +214,7 @@ if "loaded_investigation" in st.session_state and not run_button:
         data=inv["summary"].encode(),
         file_name=f"summary_{_inv_now}.md",
         mime="text/markdown",
-        use_container_width=True,
+        width="stretch",
         key="loaded_dl_md",
     )
 
@@ -266,7 +266,7 @@ def _render_result(pc: dict, *, summary_shown: bool, key_prefix: str) -> None:
         data=pdf_bytes,
         file_name=f"relatorio_{pc['audit_id'][:8]}_{now}.pdf",
         mime="application/pdf",
-        use_container_width=True,
+        width="stretch",
         key=f"{key_prefix}dl_pdf",
     )
     dl2.download_button(
@@ -274,7 +274,7 @@ def _render_result(pc: dict, *, summary_shown: bool, key_prefix: str) -> None:
         data=pc["summary"].encode(),
         file_name=f"summary_{now}.md",
         mime="text/markdown",
-        use_container_width=True,
+        width="stretch",
         key=f"{key_prefix}dl_md",
     )
 
