@@ -222,7 +222,8 @@ class Battery:
 
     def analyze_steps(self) -> list[Step]:
         m, v, since = self.main_model, PIPELINE_VERSION, self.since
-        sel = ["--model", m, "--since", since, "--pipeline-version", v]
+        # Só as execuções do protocolo (run_scenarios): sem as de multi-modelo nem as de falha induzida.
+        sel = ["--model", m, "--since", since, "--pipeline-version", v, "--run-kind", "scenarios"]
         evals = self.new_files("investigations/eval_*.json")
         run_csvs = self.new_files("evaluation/results/raw_runs_*.csv") + \
             self.new_files("evaluation/results/multi_model_runs_*.csv")
@@ -232,6 +233,8 @@ class Battery:
                  self._py("check_runs.py", *sel, "--expected", self.args.runs)),
             Step("pool_preview", "analyze", "EQ-02 — pool e estabilidade da pesquisa (só DarkSherlock).",
                  self._py("pool_preview.py", *sel)),
+            Step("stage5_report", "analyze", "Etapa 5 por cenário: verdadeiro negativo, recolha ou critério de termos?",
+                 self._py("stage5_report.py", *sel, "--out", self.out / "stage5_report.md")),
             Step("analyze_resilience", "analyze", "EQ-06 — taxa de scraping bem-sucedido.",
                  self._py("analyze_resilience.py", *run_csvs) if run_csvs else None,
                  pending="" if run_csvs else "sem CSVs de execuções desta bateria"),
@@ -259,7 +262,8 @@ class Battery:
         steps.append(Step("compare_pipelines", "analyze", f"Efeito da revisão do pipeline ({versions.LEGACY} → {v}).",
                           self._py("compare_pipelines.py", "compare", "--investigations",
                                    self.investigations / "eval_*.json", "--model", m, "--old", versions.LEGACY,
-                                   "--new", v, "--out", self.out / "compare_pipelines.md") if legacy else None,
+                                   "--new", v, "--run-kind", "scenarios", "--out", self.out / "compare_pipelines.md")
+                          if legacy else None,
                           pending="" if legacy else f"sem execuções {versions.LEGACY} deste modelo para comparar"))
         reports = self.manual / "reports"
         for sc in self.scenarios:

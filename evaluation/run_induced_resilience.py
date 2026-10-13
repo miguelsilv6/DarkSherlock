@@ -157,7 +157,8 @@ def main():
         print(f"[{scenario['id']}] a desativar '{args.engine}' e a correr a investigação...", end=" ", flush=True)
         try:
             with _induced_engine_failure(args.engine):
-                row = run_one(scenario, model_choice, llm)
+                row = run_one(scenario, model_choice, llm, run_kind="induced_resilience",
+                              disabled_engine=args.engine)
         except Exception as e:
             print(f"FALHOU: {e}")
             rows.append({"scenario_id": scenario["id"], "engine_disabled": args.engine, "error": str(e)})

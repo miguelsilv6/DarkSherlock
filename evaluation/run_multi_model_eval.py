@@ -113,7 +113,7 @@ def run_one_with_capture(scenario: dict, model_choice: str, llm) -> dict:
     llm_logger = logging.getLogger("llm")
     llm_logger.addHandler(handler)
     try:
-        row = base.run_one(scenario, model_choice, llm)
+        row = base.run_one(scenario, model_choice, llm, run_kind="multi_model")
     finally:
         llm_logger.removeHandler(handler)
 

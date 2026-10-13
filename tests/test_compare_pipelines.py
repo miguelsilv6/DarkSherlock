@@ -73,3 +73,33 @@ def test_compare_without_new_runs_explains(tmp_path, capsys, monkeypatch):
     _run(tmp_path, "eval_A1_20261001_100000.json", "A1", None, [], [], {})
     assert C.main(["compare", "--investigations", str(tmp_path / "eval_*.json"), "--model", "M"]) == 1
     assert "Repete a bateria" in capsys.readouterr().out
+
+
+def _set(path, **fields):
+    d = json.loads(path.read_text(encoding="utf-8"))
+    d.update(fields)
+    path.write_text(json.dumps(d), encoding="utf-8")
+
+
+def test_compare_skips_scenarios_whose_query_changed(runs, capsys, monkeypatch):
+    import run_kinds
+    monkeypatch.setattr(run_kinds, "RESULTS_DIR", runs / "results")
+    for f in runs.glob("eval_A1_*.json"):
+        _set(f, query="lockbit leak site")
+    _set(runs / "eval_A2_20261001_100001.json", query="credential dump forum 2026")   # sintética (v1)
+    _set(runs / "eval_A2_20261011_100001.json", query="RockYou2024 password leak")     # caso real (v2)
+    assert C.main(["compare", "--investigations", str(runs / "eval_*.json"), "--model", "M", "--new", "2.0"]) == 0
+    out = capsys.readouterr().out
+    a2 = next(ln for ln in out.splitlines() if ln.startswith("| A2 |"))
+    assert "não comparável" in a2
+    assert "Cenários comparáveis (a mesma query nas duas versões): 1 de 2" in out
+    assert "rockyou" not in out.lower() and "credential" not in out.lower()   # as queries nunca saem
+
+
+def test_compare_excludes_induced_resilience_runs(runs, capsys, monkeypatch):
+    import run_kinds
+    monkeypatch.setattr(run_kinds, "RESULTS_DIR", runs / "results")
+    _set(runs / "eval_A1_20261011_100000.json", eval_run_kind="induced_resilience")
+    C.main(["compare", "--investigations", str(runs / "eval_*.json"), "--model", "M", "--new", "2.0"])
+    a1 = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("| A1 |"))
+    assert "| 1/0 |" in a1

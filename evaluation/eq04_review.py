@@ -68,6 +68,7 @@ import statistics
 import sys
 from pathlib import Path
 
+import run_kinds
 import versions
 
 DIMENSIONS = ["correcao_tecnica", "auditabilidade", "utilidade_operacional", "ausencia_alucinacoes"]
@@ -259,9 +260,10 @@ def _file_stamp(path: str) -> str:
 
 
 def pick_darksherlock_runs(pattern: str, model: str, since: str, rule: str,
-                           pipeline_version: str | None = None) -> dict[str, dict]:
+                           pipeline_version: str | None = None, run_kind: str = run_kinds.DEFAULT) -> dict[str, dict]:
     """Uma execução por cenário (regra `rule`). ValueError se misturarem versões do pipeline sem escolha."""
     runs: dict[str, list[tuple[str, dict]]] = {}
+    kinds = run_kinds.index()
     for path in sorted(glob.glob(pattern)):
         stamp = _file_stamp(path)
         if not stamp or stamp[:8] < since:
@@ -272,7 +274,7 @@ def pick_darksherlock_runs(pattern: str, model: str, since: str, rule: str,
             continue
         if data.get("model") != model or data.get("scenario_id") not in SCENARIO_IDS or not data.get("summary"):
             continue
-        if not versions.keep(data, pipeline_version):
+        if not versions.keep(data, pipeline_version) or not run_kinds.keep(data, path, kinds, run_kind):
             continue
         runs.setdefault(data["scenario_id"], []).append((path, data))
     mixed = versions.mixed_error([d for items in runs.values() for _, d in items], pipeline_version)
@@ -361,7 +363,7 @@ def cmd_build(args) -> int:
 
     try:
         ds = pick_darksherlock_runs(args.investigations, args.model, args.since, args.run_rule,
-                                    args.pipeline_version)
+                                    args.pipeline_version, args.run_kind)
     except ValueError as e:
         print(f"ERRO: {e}")
         return 2
@@ -693,6 +695,7 @@ def main() -> int:
     b.add_argument("--model", required=True, help="Etiqueta exata do modelo cujas execuções entram na EQ-04.")
     b.add_argument("--since", default="00000000", help="Só execuções com data de ficheiro >= AAAAMMDD.")
     versions.add_argument(b)
+    run_kinds.add_argument(b)
     b.add_argument("--run-rule", choices=["first", "median_sources"], default="first",
                    help="Execução por cenário: a primeira (por data) ou a mediana do n.º de fontes finais.")
     b.add_argument("--manual-dir", default=str(Path(__file__).resolve().parent / "baseline_manual"))
