@@ -146,12 +146,13 @@ def ensure_tor(max_wait_s: int = 60, poll_interval_s: int = 3) -> tuple[bool, bo
     return False, True
 
 
-def run_one(scenario: dict, model_choice: str, llm) -> dict:
+def run_one(scenario: dict, model_choice: str, llm, run_kind: str = "scenarios", **extra) -> dict:
     """Executa o pipeline completo para um cenário e devolve métricas + artefactos.
 
     Usa pipeline.run_pipeline — as mesmas funções que a Home e a Investigation
     chamam —, com os limites fixos acima (independentes das definições da UI).
     O LLM já carregado (Etapa 1) é reutilizado nas 3 execuções, como numa sessão da app.
+    run_kind (e extra) ficam gravados na investigação: ver evaluation/run_kinds.py.
     """
     try:
         r = pipeline.run_pipeline(
@@ -160,10 +161,10 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
         )
     except pipeline.PipelineError as e:
         # Grava o que foi feito até à falha (para diagnóstico) e propaga.
-        _save(scenario, e.result)
+        _save(scenario, e.result, run_kind, **extra)
         raise
 
-    inv_fname = _save(scenario, r)
+    inv_fname = _save(scenario, r, run_kind, **extra)
     log_investigation(pipeline.audit_record(r, scenario_id=scenario["id"]))
 
     return {
@@ -187,11 +188,12 @@ def run_one(scenario: dict, model_choice: str, llm) -> dict:
     }
 
 
-def _save(scenario: dict, r: "pipeline.PipelineResult") -> str:
+def _save(scenario: dict, r: "pipeline.PipelineResult", run_kind: str = "scenarios", **extra) -> str:
     """JSON da investigação no formato da app (recarregável na Home), com o cenário do Cap. 6."""
     record = pipeline.investigation_record(r, scenario_id=scenario["id"], domain=scenario["domain"],
                                            scenario_source=SCENARIO_SOURCE,
-                                           scenario_label=scenario.get("label", ""))
+                                           scenario_label=scenario.get("label", ""),
+                                           eval_run_kind=run_kind, **extra)
     return pipeline.save_investigation(record, INVESTIGATIONS_DIR, prefix=f"eval_{scenario['id']}")
 
 

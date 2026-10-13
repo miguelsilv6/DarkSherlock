@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import collections
 import glob
+import hashlib
 import json
 import re
 import statistics
@@ -38,6 +39,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
+import run_kinds  # noqa: E402
 import versions  # noqa: E402
 from config import PIPELINE_VERSION  # noqa: E402
 
@@ -49,8 +51,8 @@ def _date(path: str) -> str:
     return m.group(1) if m else ""
 
 
-def load_runs(pattern: str, model: str, since: str = "00000000") -> list[dict]:
-    runs = []
+def load_runs(pattern: str, model: str, since: str = "00000000", run_kind: str = run_kinds.DEFAULT) -> list[dict]:
+    runs, kinds = [], run_kinds.index()
     for path in sorted(glob.glob(pattern)):
         if _date(path) < since:
             continue
@@ -58,7 +60,8 @@ def load_runs(pattern: str, model: str, since: str = "00000000") -> list[dict]:
             d = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if d.get("model") == model and d.get("scenario_id") in SCENARIO_IDS:
+        if (d.get("model") == model and d.get("scenario_id") in SCENARIO_IDS
+                and run_kinds.keep(d, path, kinds, run_kind)):
             d["_file"] = Path(path).name
             runs.append(d)
     return runs
@@ -120,7 +123,7 @@ def _fmt(x, nd=1):
 def cmd_replay(args) -> int:
     import search_filters as sf
 
-    runs = [r for r in load_runs(args.investigations, args.model, args.since)
+    runs = [r for r in load_runs(args.investigations, args.model, args.since, args.run_kind)
             if versions.version_of(r) == args.old and r.get("search_results")]
     if not runs:
         print(f"Nenhuma execução {args.old} de {args.model!r} com search_results.")
@@ -186,13 +189,19 @@ def _run_metrics(r: dict, excluded: set) -> dict:
         "ioc_verified_pct": 100 * ioc["verified"] / ioc["total"] if ioc.get("total") else None,
         "stage4": r.get("stage4_outcome") or "?",
         "stage5": r.get("stage5_outcome") or "—",
+        "query": query_hash(r.get("query", "")),
     }
+
+
+def query_hash(query: str) -> str:
+    """Identifica a query sem a mostrar (as queries dos cenários reais não podem sair na saída)."""
+    return hashlib.sha256(" ".join((query or "").lower().split()).encode("utf-8")).hexdigest()[:8]
 
 
 def cmd_compare(args) -> int:
     from tabela13 import wilcoxon_signed_rank
 
-    runs = load_runs(args.investigations, args.model, args.since)
+    runs = load_runs(args.investigations, args.model, args.since, args.run_kind)
     excluded = _excluded_hosts()
     data = {v: collections.defaultdict(list) for v in (args.old, args.new)}
     for r in runs:
@@ -211,10 +220,23 @@ def cmd_compare(args) -> int:
              "| Hosts únicos v1 | v2 | % IOCs verificados v2 | Etapa 4 v2 | Etapa 5 v2 |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     paired = {"sources": [], "spam_pct": [], "unique_hosts": []}
+    n_comparable = n_both = 0
     for sc in SCENARIO_IDS:
         a, b = data[args.old].get(sc, []), data[args.new].get(sc, [])
         if not a and not b:
             continue
+        if a and b:
+            # Só se compara a mesma query: se o cenário mudou de query entre versões (p. ex. sintética
+            # na 1.0 e caso real na 2.x), a diferença não é do código.
+            n_both += 1
+            common = {x["query"] for x in a} & {x["query"] for x in b}
+            if not common:
+                lines.append(f"| {sc} | {len(a)}/{len(b)} | não comparável: query diferente entre versões "
+                             "| | | | | | | | | | |")
+                continue
+            n_comparable += 1
+            a = [x for x in a if x["query"] in common]
+            b = [x for x in b if x["query"] in common]
         s4 = collections.Counter(x["stage4"] for x in b)
         s5 = collections.Counter(x["stage5"] for x in b)
         lines.append(
@@ -229,7 +251,9 @@ def cmd_compare(args) -> int:
                 x, y = agg(b, key), agg(a, key)
                 if x == x and y == y:
                     paired[key].append(x - y)
-    lines += ["", "Wilcoxon emparelhado por cenário (média v2 − média v1, bilateral):", ""]
+    lines += ["", f"Cenários comparáveis (a mesma query nas duas versões): {n_comparable} de {n_both} "
+                  "com execuções em ambas.",
+              "", "Wilcoxon emparelhado por cenário (média v2 − média v1, bilateral):", ""]
     for key, label in (("sources", "fontes finais"), ("spam_pct", "% spam no pool"), ("unique_hosts", "hosts únicos")):
         d = paired[key]
         if len(d) < 2:
@@ -263,6 +287,7 @@ def main(argv=None) -> int:
         p.add_argument("--since", default="00000000", help="Só ficheiros com data >= AAAAMMDD.")
         p.add_argument("--old", default=versions.LEGACY)
         p.add_argument("--out", default=None)
+        run_kinds.add_argument(p)
         if name == "compare":
             p.add_argument("--new", default=PIPELINE_VERSION, help=f"Versão nova (default: {PIPELINE_VERSION}).")
         p.set_defaults(func=fn)

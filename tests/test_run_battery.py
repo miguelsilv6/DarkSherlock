@@ -46,8 +46,9 @@ def test_plan_uses_real_scenarios_and_downloaded_models(tmp_path, monkeypatch, m
     assert cmds["multi_model"][cmds["multi_model"].index("--models") + 1] == f"{PHI};{QWEN}"
     assert cmds["induced_resilience"][-2:] == ["--scenarios", "A1"]
     analyze = {s.name: s for s in b.build("analyze")}
-    assert analyze["check_runs"].cmd[-6:] == ["--since", b.since, "--pipeline-version", rb.PIPELINE_VERSION,
-                                              "--expected", "3"]
+    assert analyze["check_runs"].cmd[-8:] == ["--since", b.since, "--pipeline-version", rb.PIPELINE_VERSION,
+                                              "--run-kind", "scenarios", "--expected", "3"]
+    assert analyze["stage5_report"].cmd[-1].endswith("stage5_report.md")
     assert "desta bateria>" in analyze["forensics_integrity"].cmd[-1]
 
 

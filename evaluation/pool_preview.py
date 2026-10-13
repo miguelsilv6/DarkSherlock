@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import run_kinds
 import versions
 
 SCENARIOS = [f"{d}{n}" for d in "ABCD" for n in "123"]
@@ -49,7 +50,9 @@ def main() -> int:
     ap.add_argument("--since", default="00000000")
     ap.add_argument("--dir", default=str(Path(__file__).resolve().parent.parent / "investigations"))
     versions.add_argument(ap)
+    run_kinds.add_argument(ap)
     args = ap.parse_args()
+    kinds = run_kinds.index()
 
     runs: dict[str, list[dict]] = collections.defaultdict(list)
     for path in sorted(glob.glob(str(Path(args.dir) / "eval_*.json"))):
@@ -60,7 +63,8 @@ def main() -> int:
             d = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if d.get("model") == args.model and d.get("search_results") and versions.keep(d, args.pipeline_version):
+        if (d.get("model") == args.model and d.get("search_results") and versions.keep(d, args.pipeline_version)
+                and run_kinds.keep(d, path, kinds, args.run_kind)):
             runs[d["scenario_id"]].append(d)
     versions.exit_if_mixed([d for rs in runs.values() for d in rs], args.pipeline_version)
     if not runs:
