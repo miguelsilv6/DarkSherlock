@@ -91,6 +91,7 @@ class Step:
     cmd: list | None = None
     pending: str = ""          # não corre: falta algo (normalmente trabalho manual)
     fatal: bool = False        # se falhar, a bateria para
+    env_drop: tuple = ()       # variáveis de ambiente que o subprocesso não herda
     status: str = "por correr"
     seconds: float = 0.0
     log: str = ""
@@ -210,8 +211,9 @@ class Battery:
     def preflight_steps(self) -> list[Step]:
         if self.args.no_tests:
             return []
+        # Os testes são da aplicação, não desta bateria: não herdam o --synthetic.
         return [Step("unit_tests", "preflight", "Testes unitários da aplicação (pytest).",
-                     [PY, "-m", "pytest", "-q"], fatal=True)]
+                     [PY, "-m", "pytest", "-q"], fatal=True, env_drop=("DARKSHERLOCK_SCENARIOS",))]
 
     def collect_steps(self) -> list[Step]:
         m, models = self.main_model, ";".join(self.models)
@@ -335,7 +337,8 @@ class Battery:
         log = self.out / f"{len(self.steps):02d}_{step.name}.log"
         step.log = log.name
         print(f"\n▶ [{step.phase}] {step.name}: {step.what}", flush=True)
-        env = dict(os.environ, PYTHONUNBUFFERED="1")
+        env = {k: v for k, v in os.environ.items() if k not in step.env_drop}
+        env["PYTHONUNBUFFERED"] = "1"
         t = time.time()
         with open(log, "w", encoding="utf-8") as fh:
             fh.write("$ " + " ".join(shlex.quote(str(c)) for c in step.cmd) + "\n\n")
