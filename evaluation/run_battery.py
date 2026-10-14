@@ -234,6 +234,7 @@ class Battery:
     def analyze_steps(self) -> list[Step]:
         m, v, since = self.main_model, PIPELINE_VERSION, self.since
         # Só as execuções do protocolo (run_scenarios): sem as de multi-modelo nem as de falha induzida.
+        # (tabela13 não leva --run-kind: só lê os raw_runs_*.csv, que são todos de run_scenarios.)
         sel = ["--model", m, "--since", since, "--pipeline-version", v, "--run-kind", "scenarios"]
         evals = self.new_files("investigations/eval_*.json")
         run_csvs = self.new_files("evaluation/results/raw_runs_*.csv") + \
@@ -265,7 +266,7 @@ class Battery:
         ]
         timing = self.manual / "timing_log.csv"
         steps.append(Step("tabela13", "analyze", "EQ-01 — Tabela 13 (DarkSherlock vs baseline manual).",
-                          self._py("tabela13.py", *sel, "--runs", self.args.runs, "--out", self.out / "eq01_tabela13.md")
+                          self._py("tabela13.py", *sel[:-2], "--runs", self.args.runs, "--out", self.out / "eq01_tabela13.md")
                           if timing.is_file() else None,
                           pending="" if timing.is_file() else
                           "falta o baseline manual cronometrado (evaluation/baseline_manual/timing_log.csv)"))

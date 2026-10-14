@@ -50,8 +50,10 @@ def test_check_runs_counts_only_protocol_runs(tmp_path, monkeypatch, capsys):
         runpy.run_path(str(CHECK_RUNS), run_name="__main__")
     except SystemExit:
         pass
-    a1 = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("A1"))
+    out = capsys.readouterr().out
+    a1 = next(ln for ln in out.splitlines() if ln.startswith("A1"))
     assert a1.split()[1] == "2"
+    assert "Execuções por tipo de recolha: induced_resilience 1, scenarios 2" in out
 
 
 def test_run_one_records_the_run_kind(tmp_path, monkeypatch):

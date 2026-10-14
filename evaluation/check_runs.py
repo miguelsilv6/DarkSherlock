@@ -38,6 +38,7 @@ def main() -> int:
     kinds = run_kinds.index()
 
     runs: dict[str, list[dict]] = collections.defaultdict(list)
+    by_kind: collections.Counter = collections.Counter()   # todas as recolhas deste modelo/data/versão
     for path in sorted(glob.glob(str(Path(args.dir) / "eval_*.json"))):
         m = re.search(r"_(\d{8})_\d{6}\.json$", path)
         if not m or m.group(1) < args.since:
@@ -46,6 +47,9 @@ def main() -> int:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        if data.get("model") == args.model and data.get("scenario_id") and versions.keep(data, args.pipeline_version):
+            known = data.get("eval_run_kind") or Path(path).name in kinds
+            by_kind[run_kinds.kind_of(data, path, kinds) + ("" if known else " (sem CSV nem campo)")] += 1
         if (data.get("model") == args.model and data.get("scenario_id") and versions.keep(data, args.pipeline_version)
                 and run_kinds.keep(data, path, kinds, args.run_kind)):
             runs[data["scenario_id"]].append(data)
@@ -55,6 +59,8 @@ def main() -> int:
         print(f"Nenhuma execução de {args.model!r} desde {args.since} em {args.dir}.")
         return 1
 
+    print("Execuções por tipo de recolha: " + ", ".join(f"{k} {n}" for k, n in sorted(by_kind.items()))
+          + f"  (a tabela usa: {args.run_kind})\n")
     print(f"{'cenário':8}{'runs':>5}{'c/search_res.':>15}{'c/found_by':>12}   {'stage4_outcome':36}{'Top-K':>8}{'fontes finais':>15}")
     problems = []
     for sc in SCENARIOS:
