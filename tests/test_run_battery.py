@@ -161,3 +161,26 @@ sys.exit(rb.main(["--phases", "analyze", "--allow-synthetic", "--no-tests", "--q
     assert proc.returncode == 1, out
     readme = next(tmp_path.glob("evaluation/results/battery_*/README.md")).read_text(encoding="utf-8")
     assert "| longa | analyze | interrompida |" in readme
+
+
+def test_synthetic_mode_leaves_local_file_alone(tmp_path, monkeypatch, models):
+    _scenarios(tmp_path, monkeypatch)          # há um scenarios.local.json real
+    monkeypatch.setenv("DARKSHERLOCK_SCENARIOS", "")
+    b = _battery(tmp_path, "--synthetic")
+    assert os.environ["DARKSHERLOCK_SCENARIOS"] == "synthetic"
+    assert not b.problems and b.source == "synthetic" and len(b.scenarios) == 12
+    assert "forçados com --synthetic" in b.plan_text()
+    local = rb.scenarios_mod.local_path()
+    assert rb.scenarios_mod.load(local)[1] == "local"            # caminho explícito: o ficheiro real
+    redact = {s.name: s.cmd for s in b.build("redact")}
+    for name in ("redact", "redact_check"):
+        assert redact[name][-2:] == ["--scenarios", str(local)]  # rasura sempre com as regras reais
+
+
+def test_missing_local_file_with_backup_suggests_restore(tmp_path, monkeypatch, models):
+    monkeypatch.setenv("DARKSHERLOCK_SCENARIOS", "")
+    local = tmp_path / "scenarios.local.json"
+    (tmp_path / "scenarios.local.json.bak").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("DARKSHERLOCK_SCENARIOS_FILE", str(local))
+    [problem] = [p for p in _battery(tmp_path).problems if "scenarios.local.json" in p]
+    assert "mv " in problem and "--synthetic" in problem
