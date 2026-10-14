@@ -205,3 +205,18 @@ def test_every_analyze_step_is_accepted_by_its_script(tmp_path, monkeypatch, mod
         r = subprocess.run([str(c) for c in s.cmd], capture_output=True, text=True, cwd=rb.ROOT, timeout=120)
         assert "unrecognized arguments" not in r.stderr and "invalid choice" not in r.stderr, (s.name, r.stderr)
         assert "the following arguments are required" not in r.stderr, (s.name, r.stderr)
+
+
+def test_unit_tests_step_does_not_inherit_synthetic(tmp_path, monkeypatch, models):
+    """Com --synthetic, o pytest do preflight falhava: herdava DARKSHERLOCK_SCENARIOS=synthetic."""
+    _scenarios(tmp_path, monkeypatch)
+    monkeypatch.setenv("DARKSHERLOCK_SCENARIOS", "")
+    b = _battery(tmp_path, "--synthetic", "--quiet")
+    [unit] = b.build("preflight")
+    assert "DARKSHERLOCK_SCENARIOS" in unit.env_drop
+    probe = rb.Step("probe", "preflight", "Ambiente.",
+                    [rb.PY, "-c", "import os; print('ENV=' + repr(os.environ.get('DARKSHERLOCK_SCENARIOS')))"],
+                    env_drop=unit.env_drop)
+    b.steps.append(probe)
+    b.run_step(probe)
+    assert "ENV=None" in (b.out / probe.log).read_text(encoding="utf-8")

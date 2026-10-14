@@ -23,6 +23,13 @@ for p in (ROOT, ROOT / "evaluation"):
 
 
 @pytest.fixture(autouse=True)
+def _no_scenario_env(monkeypatch):
+    """Os testes não herdam a escolha de cenários de quem os corre (p. ex. run_battery.py --synthetic)."""
+    monkeypatch.delenv("DARKSHERLOCK_SCENARIOS", raising=False)
+    monkeypatch.delenv("DARKSHERLOCK_SCENARIOS_FILE", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _settings_file_in_tmp(tmp_path, monkeypatch):
     """As definições gravadas (settings_state) nunca vão para o config/ do repositório."""
     import settings_state
