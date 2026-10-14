@@ -184,3 +184,24 @@ def test_missing_local_file_with_backup_suggests_restore(tmp_path, monkeypatch, 
     monkeypatch.setenv("DARKSHERLOCK_SCENARIOS_FILE", str(local))
     [problem] = [p for p in _battery(tmp_path).problems if "scenarios.local.json" in p]
     assert "mv " in problem and "--synthetic" in problem
+
+
+def test_every_analyze_step_is_accepted_by_its_script(tmp_path, monkeypatch, models):
+    """Cada script de análise aceita os argumentos que a bateria lhe passa (tabela13 rejeitava --run-kind)."""
+    import subprocess
+    _scenarios(tmp_path, monkeypatch)
+    reports = tmp_path / "evaluation" / "baseline_manual" / "reports"
+    reports.mkdir(parents=True)
+    (reports.parent / "timing_log.csv").write_text("scenario_id,stage,duration_s\n", encoding="utf-8")
+    (reports / "manual_sources_A1.csv").write_text("url,title,engine,selected\n", encoding="utf-8")
+    for sid in ("A1", "C1"):
+        (reports / f"report_{sid}.md").write_text("x", encoding="utf-8")
+    b = _battery(tmp_path, "--phases", "analyze")
+    b.out.mkdir(parents=True)
+    monkeypatch.setattr(b, "_has_legacy_runs", lambda: True)
+    steps = [s for s in b.build("analyze") if s.cmd]
+    assert {"tabela13", "compare_pipelines", "eq02_build_A1", "eq04_build", "stage5_report"} <= {s.name for s in steps}
+    for s in steps:
+        r = subprocess.run([str(c) for c in s.cmd], capture_output=True, text=True, cwd=rb.ROOT, timeout=120)
+        assert "unrecognized arguments" not in r.stderr and "invalid choice" not in r.stderr, (s.name, r.stderr)
+        assert "the following arguments are required" not in r.stderr, (s.name, r.stderr)
