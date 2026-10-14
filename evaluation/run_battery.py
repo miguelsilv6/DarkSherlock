@@ -39,6 +39,8 @@ Uso:
     .venv/bin/python evaluation/run_battery.py --yes    # o mesmo, em primeiro plano
     ./evaluation/run_battery.sh --phases analyze,redact --since 20261012
     ./evaluation/run_battery.sh --scenarios A1,B2 --runs 1 --multi-runs 1     # ensaio curto
+    ./evaluation/run_battery.sh --synthetic --skip multi_model,refusal_ablation,induced_resilience
+                                    # sintéticos em 2.x, para comparar com 1.0 (as mesmas queries)
 
 Opções úteis: --main-model "<label>", --models "<label1>;<label2>" (separados
 por ';'), --skip multi_model,refusal_ablation, --no-tests.
@@ -112,6 +114,8 @@ class Battery:
         self.notes: list[str] = []         # do preflight: avisos
         self.scenarios, self.source = [], "?"
         self.main_model, self.models = args.main_model, []
+        if args.synthetic:  # herdado por todas as etapas (subprocessos): ver scenarios.load()
+            os.environ["DARKSHERLOCK_SCENARIOS"] = "synthetic"
 
     # ------------------------------------------------------------------ preflight
     def check_scenarios(self) -> None:
@@ -120,10 +124,17 @@ class Battery:
         except (ValueError, json.JSONDecodeError) as e:
             self.problems.append(f"Cenários inválidos: {e}")
             return
-        if self.source != "local" and not self.args.allow_synthetic:
-            self.problems.append(f"Não há {scenarios_mod.local_path()}: a bateria usa dados reais. Copia os casos "
-                                 "públicos (cp evaluation/scenarios.public.json evaluation/scenarios.local.json) e "
-                                 "preenche C1/C3, ou usa --allow-synthetic para um ensaio.")
+        local = scenarios_mod.local_path()
+        backup = local.with_name(local.name + ".bak")
+        if self.source != "local" and not (self.args.allow_synthetic or self.args.synthetic):
+            if backup.is_file():
+                self.problems.append(f"Não há {local}, mas existe {backup.name}: repõe-no com "
+                                     f"`mv {backup} {local}`. Para correr os cenários sintéticos sem mexer nele, "
+                                     "usa --synthetic.")
+            else:
+                self.problems.append(f"Não há {local}: a bateria usa dados reais. Copia os casos públicos "
+                                     "(cp evaluation/scenarios.public.json evaluation/scenarios.local.json) e "
+                                     "preenche C1/C3, ou usa --synthetic para correr os cenários sintéticos.")
         if self.args.scenarios:
             wanted = {s.strip().upper() for s in self.args.scenarios.split(",")}
             scs = [s for s in scs if s["id"] in wanted]
@@ -285,11 +296,14 @@ class Battery:
         produced = self.new_files("investigations/eval_*.json") + [
             f for f in self.new_files("evaluation/results/*") if Path(f).is_file()]
         sources = [str(self.out)] + produced
+        # As regras dos termos reais vêm sempre do ficheiro local, se existir — também numa bateria --synthetic.
+        local = scenarios_mod.local_path()
+        rules = ["--scenarios", local] if local.is_file() else []
         return [
             Step("redact", "redact", "Rasura de tudo o que a bateria produziu.",
-                 self._py("redact.py", *sources, "--out", self.redacted)),
+                 self._py("redact.py", *sources, "--out", self.redacted, *rules)),
             Step("redact_check", "redact", "Verificação: não pode restar nenhum termo real.",
-                 self._py("redact.py", "--check", self.redacted)),
+                 self._py("redact.py", "--check", self.redacted, *rules)),
         ]
 
     def _has_legacy_runs(self) -> bool:
@@ -343,7 +357,8 @@ class Battery:
 
     def plan_text(self) -> str:
         n = len(self.scenarios)
-        lines = [f"Bateria {self.stamp} — pipeline {PIPELINE_VERSION}, cenários {self.source} "
+        source = f"{self.source} (forçados com --synthetic)" if self.args.synthetic else self.source
+        lines = [f"Bateria {self.stamp} — pipeline {PIPELINE_VERSION}, cenários {source} "
                  f"({', '.join(s['id'] for s in self.scenarios) or '-'})",
                  f"Modelo principal: {self.main_model or '-'}",
                  f"Modelos (multi-modelo e ablação): {'; '.join(self.models) or '-'}"]
@@ -398,7 +413,11 @@ def parse_args(argv=None):
     ap.add_argument("--multi-runs", type=int, default=5, help="Execuções por cenário e modelo em multi-modelo (default: 5).")
     ap.add_argument("--since", default=None, help="AAAAMMDD das execuções a analisar (default: hoje).")
     ap.add_argument("--no-tests", action="store_true", help="Não corre o pytest no preflight.")
-    ap.add_argument("--allow-synthetic", action="store_true", help="Aceita os cenários sintéticos (só para ensaios).")
+    ap.add_argument("--allow-synthetic", action="store_true",
+                    help="Aceita os cenários sintéticos quando não há ficheiro local (só para ensaios).")
+    ap.add_argument("--synthetic", action="store_true",
+                    help="Corre os 12 cenários sintéticos mesmo havendo scenarios.local.json, sem lhe mexer "
+                         "(p. ex. para comparar 1.0 -> 2.x com as mesmas queries).")
     ap.add_argument("--dry-run", action="store_true", help="Mostra o plano e as verificações; não corre nada.")
     ap.add_argument("--yes", action="store_true", help="Não pede confirmação antes da recolha.")
     ap.add_argument("--quiet", action="store_true", help="Não repete no terminal o que vai para os logs.")

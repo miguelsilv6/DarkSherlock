@@ -189,3 +189,14 @@ def test_check_staged_accepts_public_cases_but_not_with_personal_data(tmp_path):
     target.write_text(json.dumps(public), encoding="utf-8")
     r = staged_check()
     assert r.returncode == 1 and "C1 com dados pessoais" in r.stderr and "eu.proprio" not in r.stderr
+
+
+def test_env_forces_synthetic_but_explicit_path_loads_local(tmp_path, monkeypatch):
+    p = tmp_path / "local.json"
+    p.write_text(json.dumps(LOCAL), encoding="utf-8")
+    monkeypatch.setenv("DARKSHERLOCK_SCENARIOS_FILE", str(p))
+    monkeypatch.setenv("DARKSHERLOCK_SCENARIOS", "synthetic")
+    sc, src = S.load()
+    assert src == "synthetic" and [s["id"] for s in sc] == S.IDS
+    assert S.load(p)[1] == "local"
+    assert R._load_rules(str(p))[0]           # a rasura continua a usar as regras reais

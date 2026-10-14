@@ -15,6 +15,10 @@ NUNCA entram no Git:
     scenarios.local.json e preenche aí os teus dados (o hook pre-commit
     recusa o ficheiro público com dados pessoais).
 
+Para correr os sintéticos sem mexer no ficheiro local (p. ex. a comparação
+1.0 -> 2.x, que exige as mesmas queries): DARKSHERLOCK_SCENARIOS=synthetic
+(é o que faz `run_battery.py --synthetic`).
+
 Se o ficheiro local existir, os cenários são os dele (os IDs A1–D3 que não
 estiverem lá não correm); senão usam-se os 12 sintéticos da Tabela 12. Cada
 investigação de avaliação grava "scenario_source" ("local"/"synthetic") e o
@@ -79,7 +83,13 @@ def validate(scenarios: list) -> list:
 
 
 def load(path: Path | None = None) -> tuple[list, str]:
-    """(cenários, origem) — origem "local" (ficheiro real) ou "synthetic"."""
+    """(cenários, origem) — origem "local" (ficheiro real) ou "synthetic".
+
+    DARKSHERLOCK_SCENARIOS=synthetic força os sintéticos sem tocar no ficheiro local
+    (run_battery.py --synthetic); um `path` explícito carrega sempre esse ficheiro.
+    """
+    if path is None and os.getenv("DARKSHERLOCK_SCENARIOS", "").strip().lower() == "synthetic":
+        return [dict(s) for s in SYNTHETIC], "synthetic"
     p = path or local_path()
     if not p.is_file():
         return [dict(s) for s in SYNTHETIC], "synthetic"
