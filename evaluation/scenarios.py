@@ -42,6 +42,8 @@ IDS = [f"{d}{n}" for d in "ABCD" for n in "123"]
 PRESETS = {"threat_intel", "ransomware_malware", "personal_identity", "corporate_espionage"}
 
 # Os 12 cenários sintéticos — Tabela 12 do relatório (query e preset tal como no Capítulo 6).
+# "negative_control": entidades fictícias (example-corp.test — .test é um domínio reservado —,
+# NIF 999999999): o resultado correto é 0 fontes; qualquer fonte final é um falso positivo.
 SYNTHETIC = [
     {"id": "A1", "domain": "Threat Intel",        "preset": "threat_intel",         "query": "lockbit leak site"},
     {"id": "A2", "domain": "Threat Intel",        "preset": "threat_intel",         "query": "credential dump forum 2026"},
@@ -49,13 +51,18 @@ SYNTHETIC = [
     {"id": "B1", "domain": "Ransomware/Malware",  "preset": "ransomware_malware",   "query": "Akira ransomware"},
     {"id": "B2", "domain": "Ransomware/Malware",  "preset": "ransomware_malware",   "query": "cobalt strike beacon"},
     {"id": "B3", "domain": "Ransomware/Malware",  "preset": "ransomware_malware",   "query": "smokeloader access broker"},
-    {"id": "C1", "domain": "Identidade Pessoal",  "preset": "personal_identity",    "query": "john.doe@example-corp.test breach"},
-    {"id": "C2", "domain": "Identidade Pessoal",  "preset": "personal_identity",    "query": "example-corp.test data leak"},
-    {"id": "C3", "domain": "Identidade Pessoal",  "preset": "personal_identity",    "query": "NIF 999999999 dark web"},
-    {"id": "D1", "domain": "Espionagem Corporativa", "preset": "corporate_espionage", "query": "example-corp source code leak"},
-    {"id": "D2", "domain": "Espionagem Corporativa", "preset": "corporate_espionage", "query": "example-corp API key dump"},
-    {"id": "D3", "domain": "Espionagem Corporativa", "preset": "corporate_espionage", "query": "example-corp internal wiki dump"},
+    {"id": "C1", "domain": "Identidade Pessoal",  "preset": "personal_identity",    "query": "john.doe@example-corp.test breach", "negative_control": True},
+    {"id": "C2", "domain": "Identidade Pessoal",  "preset": "personal_identity",    "query": "example-corp.test data leak", "negative_control": True},
+    {"id": "C3", "domain": "Identidade Pessoal",  "preset": "personal_identity",    "query": "NIF 999999999 dark web", "negative_control": True},
+    {"id": "D1", "domain": "Espionagem Corporativa", "preset": "corporate_espionage", "query": "example-corp source code leak", "negative_control": True},
+    {"id": "D2", "domain": "Espionagem Corporativa", "preset": "corporate_espionage", "query": "example-corp API key dump", "negative_control": True},
+    {"id": "D3", "domain": "Espionagem Corporativa", "preset": "corporate_espionage", "query": "example-corp internal wiki dump", "negative_control": True},
 ]
+
+
+def negative_control_queries() -> set[str]:
+    """Queries (minúsculas, espaços normalizados) dos cenários sintéticos de controlo negativo."""
+    return {" ".join(s["query"].lower().split()) for s in SYNTHETIC if s.get("negative_control")}
 
 
 def local_path() -> Path:

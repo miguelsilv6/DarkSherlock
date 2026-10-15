@@ -103,3 +103,34 @@ def test_compare_excludes_induced_resilience_runs(runs, capsys, monkeypatch):
     C.main(["compare", "--investigations", str(runs / "eval_*.json"), "--model", "M", "--new", "2.0"])
     a1 = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("| A1 |"))
     assert "| 1/0 |" in a1
+
+
+def test_fisher_exact_by_hand():
+    assert C.fisher_exact(3, 0, 0, 3) == pytest.approx(0.1)          # 2 / C(6,3) bilateral
+    assert C.fisher_exact(1, 1, 1, 1) == pytest.approx(1.0)
+    assert C.fisher_exact(2, 1, 0, 3) == pytest.approx(0.4)
+
+
+def test_negative_control_section(tmp_path, capsys, monkeypatch):
+    """Entidades fictícias: v1 com fontes (falsos positivos), v2 sem; os temas reais ficam à parte."""
+    import run_kinds
+    monkeypatch.setattr(run_kinds, "RESULTS_DIR", tmp_path / "results")
+    monkeypatch.setattr(C, "_excluded_hosts", lambda: set())
+    pool = [{"title": "x", "link": _onion("a"), "found_by": ["E1"]}]
+    rows = [("C1", "john.doe@example-corp.test breach", {_onion("a"): "x", _onion("b"): "y"}, {}),
+            ("D2", "example-corp API key dump", {_onion("a"): "x"}, {}),
+            ("A1", "lockbit leak site", {_onion("a"): "x"}, {_onion("a"): "x", _onion("b"): "y"})]
+    for i, (sc, q, v1, v2) in enumerate(rows):
+        for j, (ver, scraped) in enumerate(((None, v1), ("2.0", v2))):
+            name = f"eval_{sc}_2026100{j + 1}_10000{i}.json"
+            _run(tmp_path, name, sc, ver, pool, [], scraped)
+            d = json.loads((tmp_path / name).read_text(encoding="utf-8"))
+            d["query"] = q
+            (tmp_path / name).write_text(json.dumps(d), encoding="utf-8")
+    assert C.main(["compare", "--investigations", str(tmp_path / "eval_*.json"), "--model", "M", "--new", "2.0"]) == 0
+    out = capsys.readouterr().out
+    section = out.split("Controlo negativo", 1)[1]
+    assert "- 1.0-legacy: 2 de 2 execuções (100%) com ≥ 1 fonte final; média 1.5" in section
+    assert "- 2.0: 0 de 2 execuções (0%) com ≥ 1 fonte final" in section
+    assert "Fisher (bilateral, execuções independentes): p = 0.3333" in section
+    assert "example-corp" not in out and "lockbit" not in out.lower()      # as queries nunca saem
