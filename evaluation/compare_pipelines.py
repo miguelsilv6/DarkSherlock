@@ -30,6 +30,7 @@ import collections
 import glob
 import hashlib
 import json
+import math
 import re
 import statistics
 import sys
@@ -198,8 +199,23 @@ def query_hash(query: str) -> str:
     return hashlib.sha256(" ".join((query or "").lower().split()).encode("utf-8")).hexdigest()[:8]
 
 
+def fisher_exact(a: int, b: int, c: int, d: int) -> float:
+    """Teste exato de Fisher, bilateral, para a tabela [[a, b], [c, d]] (sem dependências externas)."""
+    n1, k, n = a + b, a + c, a + b + c + d
+    if n == 0:
+        return float("nan")
+    def prob(x):
+        return math.comb(k, x) * math.comb(n - k, n1 - x) / math.comb(n, n1)
+    p_obs = prob(a)
+    return min(1.0, sum(prob(x) for x in range(max(0, n1 - (n - k)), min(k, n1) + 1)
+                        if prob(x) <= p_obs * (1 + 1e-7)))
+
+
 def cmd_compare(args) -> int:
+    from scenarios import negative_control_queries
     from tabela13 import wilcoxon_signed_rank
+
+    controls = {query_hash(q) for q in negative_control_queries()}
 
     runs = load_runs(args.investigations, args.model, args.since, args.run_kind)
     excluded = _excluded_hosts()
@@ -220,6 +236,8 @@ def cmd_compare(args) -> int:
              "| Hosts únicos v1 | v2 | % IOCs verificados v2 | Etapa 4 v2 | Etapa 5 v2 |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     paired = {"sources": [], "spam_pct": [], "unique_hosts": []}
+    real_sources = []                                   # fontes finais só nos temas reais (sem controlos)
+    neg = {"old": [], "new": []}                        # fontes finais por execução, controlos negativos
     n_comparable = n_both = 0
     for sc in SCENARIO_IDS:
         a, b = data[args.old].get(sc, []), data[args.new].get(sc, [])
@@ -251,6 +269,14 @@ def cmd_compare(args) -> int:
                 x, y = agg(b, key), agg(a, key)
                 if x == x and y == y:
                     paired[key].append(x - y)
+            is_control = {x["query"] for x in a + b} <= controls
+            if is_control:
+                neg["old"] += [x["sources"] for x in a]
+                neg["new"] += [x["sources"] for x in b]
+            else:
+                x, y = agg(b, "sources"), agg(a, "sources")
+                if x == x and y == y:
+                    real_sources.append(x - y)
     lines += ["", f"Cenários comparáveis (a mesma query nas duas versões): {n_comparable} de {n_both} "
                   "com execuções em ambas.",
               "", "Wilcoxon emparelhado por cenário (média v2 − média v1, bilateral):", ""]
@@ -262,6 +288,20 @@ def cmd_compare(args) -> int:
         w = wilcoxon_signed_rank(d, "two-sided")
         lines.append(f"- {label}: n = {len(d)} cenários, mediana da diferença = {statistics.median(d):+.2f}, "
                      f"p = {w['p']:.4f}")
+    if neg["old"] and neg["new"]:
+        if len(real_sources) >= 2:
+            w = wilcoxon_signed_rank(real_sources, "two-sided")
+            lines.append(f"- fontes finais, só temas reais (sem os controlos negativos): n = {len(real_sources)} "
+                         f"cenários, mediana da diferença = {statistics.median(real_sources):+.2f}, p = {w['p']:.4f}")
+        fp = {v: sum(1 for s in neg[v] if s > 0) for v in neg}
+        lines += ["", "Controlo negativo — entidades fictícias, em que o resultado correto é 0 fontes "
+                      "(qualquer fonte final é um falso positivo; aqui, menos fontes é melhor):", ""]
+        for v, label in (("old", args.old), ("new", args.new)):
+            n = len(neg[v])
+            lines.append(f"- {label}: {fp[v]} de {n} execuções ({100 * fp[v] / n:.0f}%) com ≥ 1 fonte final; "
+                         f"média {_fmt(_mean(neg[v]))} fontes por execução")
+        p = fisher_exact(fp["old"], len(neg["old"]) - fp["old"], fp["new"], len(neg["new"]) - fp["new"])
+        lines.append(f"- teste exato de Fisher (bilateral, execuções independentes): p = {p:.4f}")
     lines += ["", "Nota: execuções da mesma configuração (modelo, motores, Tor) em datas diferentes; a dark web "
                   "muda entre execuções, por isso parte da diferença não se deve ao código."]
     _emit(lines, args.out)
