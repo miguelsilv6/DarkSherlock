@@ -88,3 +88,9 @@ def test_end_to_end(tmp_path):
     r = run("analyze", "--out", str(out))
     assert r.returncode == 0, r.stdout + r.stderr
     assert "Global (H1 principal)" in r.stdout
+
+
+def test_no_evidence_headings():
+    assert E.is_no_evidence("## Sem dados suficientes para análise\n\nx")
+    assert E.is_no_evidence("\n## Sem evidência suficiente para análise\n")
+    assert not E.is_no_evidence("## 1. Query: x\n\n## Sem evidência suficiente")

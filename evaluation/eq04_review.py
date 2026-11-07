@@ -230,6 +230,15 @@ _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _MANUAL_LEAK_RE = re.compile(r"(?im)^\s*[-*]\s*\**\s*(sha-?256|timestamp de recolha)[^\n]*\n?")
 
 
+# Cabeçalhos dos relatórios sem evidência: o de llm.generate_summary e o de
+# pipeline.no_evidence_report (pipeline 2.x). Não são análises avaliáveis pela rubric.
+NO_EVIDENCE_HEADINGS = ("## Sem dados suficientes", "## Sem evidência suficiente")
+
+
+def is_no_evidence(summary: str) -> bool:
+    return summary.lstrip().startswith(NO_EVIDENCE_HEADINGS)
+
+
 def strip_darksherlock_banners(summary: str) -> tuple[str, bool]:
     """Remove avisos de qualidade/recusa antepostos pelo DarkSherlock. Devolve (texto, havia_aviso)."""
     m = _BANNER_RE.match(summary)
@@ -372,8 +381,9 @@ def cmd_build(args) -> int:
     for sc in SCENARIO_IDS:
         if sc in ds:
             summary, had_banner = strip_darksherlock_banners(ds[sc]["data"]["summary"])
-            if summary.startswith("## Sem dados suficientes"):
-                problems.append(f"{sc} (DarkSherlock): relatório é o aviso 'Sem dados suficientes' — não é avaliável.")
+            if is_no_evidence(summary):
+                problems.append(f"{sc} (DarkSherlock): relatório sem evidência ('Sem dados/evidência suficiente') "
+                                "— não é avaliável pela rubric.")
             items.append({"scenario": sc, "condition": "DarkSherlock", "text": summary,
                           "evidence": evidence_darksherlock(ds[sc]["data"].get("scraped_content", {})),
                           "source_file": ds[sc]["path"], "n_candidate_runs": ds[sc]["n_runs"],
