@@ -19,7 +19,7 @@ O que faz:
 
 Os números produzidos NÃO têm significado e NÃO podem entrar na tese: servem
 só para ver o formato final das tabelas e apanhar erros (cenários sem
-execuções, relatórios "Sem dados suficientes", mistura de versões, ...).
+execuções, relatórios sem evidência, mistura de versões, ...).
 
 Isolamento:
   - Saída em evaluation/ensaio/ENSAIO_FICTICIO_<data>/ (no .gitignore e nos
@@ -365,8 +365,8 @@ def main(argv=None) -> int:
         problems.append(f"Cenários sem execuções utilizáveis do modelo (ficam fora do ensaio): {', '.join(missing)}.")
     for sc, c in sorted(chosen.items()):
         summary, _ = eq04_review.strip_darksherlock_banners(c["data"].get("summary", ""))
-        if summary.startswith("## Sem dados suficientes"):
-            problems.append(f"{sc}: o relatório do DarkSherlock escolhido para a EQ-04 é 'Sem dados suficientes' "
+        if eq04_review.is_no_evidence(summary):
+            problems.append(f"{sc}: o relatório do DarkSherlock escolhido para a EQ-04 é um relatório sem evidência "
                             "(não avaliável pelos revisores).")
 
     print(f"Ensaio técnico (DADOS FICTÍCIOS) em {out}")
