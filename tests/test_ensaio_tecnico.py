@@ -128,4 +128,10 @@ def test_flags_no_evidence_reports(tmp_path):
     readme = (out / "LEIA-ME.md").read_text(encoding="utf-8")
     assert "B2: o relatório do DarkSherlock escolhido para a EQ-04 é um relatório sem evidência" in readme
     assert "A1: o relatório" not in readme
-    assert "B2 (DarkSherlock): relatório sem evidência" in readme  # aviso do eq04_review build
+    # a EQ-04 exclui o cenário inteiro (as duas condições) e regista-o na chave e no resumo
+    key = json.loads((out / "eq04" / "private" / "key.json").read_text(encoding="utf-8"))
+    assert set(key["excluded_no_evidence"]) == {"B2"}
+    assert sorted(v["scenario"] for v in key["reports"].values()) == ["A1", "A1"]
+    assert "Cenários excluídos" in (out / "eq04" / "eq04_summary.md").read_text(encoding="utf-8")
+    tn = (out / "true_negatives.md").read_text(encoding="utf-8")
+    assert "| B2 | 3 | 3/3 |" in tn and "| A1 | 3 | 0/3 |" in tn
