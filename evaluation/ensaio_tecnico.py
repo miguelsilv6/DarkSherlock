@@ -7,8 +7,9 @@ O que faz:
   1. Gera um baseline manual fictício (timing_log.csv, manual_sources_<ID>.csv,
      report_<ID>.md, sources/<ID>/*.txt) a partir das investigações reais do
      DarkSherlock (só os URLs recuperados; nenhuma query entra nos ficheiros).
-  2. Corre os CLIs reais — tabela13.py, eq02_eq03.py build/analyze e
-     eq04_review.py build/analyze — com caminhos explícitos para essa pasta.
+  2. Corre os CLIs reais — tabela13.py, eq02_eq03.py build/analyze,
+     true_negatives.py e eq04_review.py build --exclude-no-evidence/analyze —
+     com caminhos explícitos para essa pasta.
   3. Preenche as folhas dos "revisores" com rótulos e pontuações aleatórios
      (concordância controlada) e as reconciliações, para exercitar o κ, as
      divergências e o 3.º revisor.
@@ -316,7 +317,7 @@ def write_readme(out: Path, runner: Runner, args, problems: list[str], missing: 
     if not problems and not warned:
         L.append("- Nenhum.")
     L.append("\n## Resultados (fictícios)\n")
-    for rel in ("eq01_tabela13.md", "eq02_eq03/eq02_eq03_summary.md", "eq04/eq04_summary.md",
+    for rel in ("eq01_tabela13.md", "eq02_eq03/eq02_eq03_summary.md", "true_negatives.md", "eq04/eq04_summary.md",
                 "ground_truth/llm_judge/llm_judge_summary.md"):
         if (out / rel).is_file():
             L.append(f"- `{rel}`")
@@ -367,7 +368,7 @@ def main(argv=None) -> int:
         summary, _ = eq04_review.strip_darksherlock_banners(c["data"].get("summary", ""))
         if eq04_review.is_no_evidence(summary):
             problems.append(f"{sc}: o relatório do DarkSherlock escolhido para a EQ-04 é um relatório sem evidência "
-                            "(não avaliável pelos revisores).")
+                            "— excluído da EQ-04 (--exclude-no-evidence) e analisado em true_negatives.md.")
 
     print(f"Ensaio técnico (DADOS FICTÍCIOS) em {out}")
     print(f"Cenários com execuções: {', '.join(sorted(chosen))}\n")
@@ -395,11 +396,14 @@ def main(argv=None) -> int:
         runner.run("eq02_eq03_analyze", [str(HERE / "eq02_eq03.py"), "analyze", "--ground-truth", str(gt),
                                          "--investigations", inv_glob, "--manual-dir", str(base / "reports"),
                                          "--scenarios", ",".join(built), "--out", str(out / "eq02_eq03"), *filters])
+    runner.run("true_negatives", [str(HERE / "true_negatives.py"), "--investigations", inv_glob, *filters,
+                                  "--manual-dir", str(base), "--ground-truth", str(gt),
+                                  "--out", str(out / "true_negatives.md")])
 
     eq04 = out / "eq04"
     if runner.run("eq04_build", [str(HERE / "eq04_review.py"), "build", "--investigations", inv_glob, *filters,
                                  "--manual-dir", str(base), "--out", str(eq04), "--seed", str(args.seed),
-                                 "--allow-incomplete"]) == 0:
+                                 "--allow-incomplete", "--exclude-no-evidence"]) == 0:
         fill_eq04_scores(eq04, rng)
         analyze = [str(HERE / "eq04_review.py"), "analyze", "--out", str(eq04)]
         if runner.run("eq04_analyze_1", analyze, ok_codes=(0, 1)) == 1:

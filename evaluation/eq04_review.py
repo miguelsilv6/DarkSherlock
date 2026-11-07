@@ -44,6 +44,11 @@ Decisões de operacionalização (documentar na metodologia):
   - A evidência de cada relatório DarkSherlock é o texto integral das fontes
     raspadas (o modelo viu no máximo 1 500 caracteres por fonte); a do manual
     é o conteúdo de sources/<ID>/*.txt.
+  - Com --exclude-no-evidence, um cenário cuja execução escolhida produziu um
+    relatório sem evidência sai da revisão (as duas condições, para a
+    comparação continuar emparelhada): não tem afirmações nem citações para a
+    rubric. A exclusão fica em key.json ("excluded_no_evidence") e no resumo;
+    esses cenários são analisados em true_negatives.py.
 
 Uso:
     python evaluation/eq04_review.py build \\
@@ -377,10 +382,15 @@ def cmd_build(args) -> int:
         print(f"ERRO: {e}")
         return 2
     manual_dir = Path(args.manual_dir)
-    items, problems = [], []
+    items, problems, excluded = [], [], {}
     for sc in SCENARIO_IDS:
         if sc in ds:
             summary, had_banner = strip_darksherlock_banners(ds[sc]["data"]["summary"])
+            if is_no_evidence(summary) and args.exclude_no_evidence:
+                # A regra é fixada antes da revisão: sai o cenário inteiro (as duas condições),
+                # para a comparação continuar emparelhada.
+                excluded[sc] = Path(ds[sc]["path"]).name
+                continue
             if is_no_evidence(summary):
                 problems.append(f"{sc} (DarkSherlock): relatório sem evidência ('Sem dados/evidência suficiente') "
                                 "— não é avaliável pela rubric.")
@@ -400,6 +410,9 @@ def cmd_build(args) -> int:
                           "evidence": evidence_manual(man["sources"]), "source_file": man["path"],
                           "n_sources": len(man["sources"])})
 
+    if excluded:
+        print(f"Excluídos da EQ-04 (relatório do DarkSherlock sem evidência, --exclude-no-evidence): "
+              f"{', '.join(excluded)} — {len(excluded)} cenário(s), as duas condições.")
     if problems:
         print("AVISOS:")
         for p in problems:
@@ -428,7 +441,7 @@ def cmd_build(args) -> int:
     (out / "private" / "key.json").write_text(
         json.dumps({"seed": args.seed, "model": args.model, "run_rule": args.run_rule, "since": args.since,
                     "pipeline_versions": sorted({versions.version_of(c["data"]) for c in ds.values()}),
-                    "reports": key}, ensure_ascii=False, indent=2), encoding="utf-8")
+                    "excluded_no_evidence": excluded, "reports": key}, ensure_ascii=False, indent=2), encoding="utf-8")
 
     rubric_txt = "\n".join(f"- **{DIM_LABELS[d]}** (`{d}`): {RUBRIC[d]}" for d in DIMENSIONS)
     for reviewer in ("A", "B"):
@@ -579,6 +592,11 @@ def render_summary(res: dict, key_meta: dict) -> str:
     L.append(f"Execução do DarkSherlock por cenário: regra `{key_meta.get('run_rule')}` "
              f"(modelo `{key_meta.get('model')}`, desde {key_meta.get('since')}). "
              f"Relatórios avaliados: {len(rows)}.\n")
+    excl = key_meta.get("excluded_no_evidence") or {}
+    if excl:
+        L.append(f"Cenários excluídos (relatório do DarkSherlock sem evidência; as duas condições saem): "
+                 f"{', '.join(sorted(excl))} ({len(excl)}). Ver a tabela de verdadeiros negativos "
+                 "(`true_negatives.py`).\n")
 
     L.append("## Concordância entre os dois revisores (pontuações brutas)\n")
     L.append("| Dimensão | κ ponderado (linear) | Concordância exata | Diferença ≤ 1 |")
@@ -712,6 +730,9 @@ def main() -> int:
     b.add_argument("--out", default=str(DEFAULT_OUT))
     b.add_argument("--seed", type=int, default=42)
     b.add_argument("--allow-incomplete", action="store_true", help="Ensaio parcial: permite cenários/condições em falta.")
+    b.add_argument("--exclude-no-evidence", action="store_true",
+                   help="Exclui os cenários cujo relatório do DarkSherlock escolhido é um relatório sem evidência "
+                        "(as duas condições); a exclusão fica registada na chave e no resumo.")
     b.add_argument("--force", action="store_true", help="Reconstrói mesmo que já exista uma chave (invalida as folhas).")
     b.set_defaults(func=cmd_build)
 

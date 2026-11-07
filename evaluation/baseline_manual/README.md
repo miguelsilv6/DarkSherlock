@@ -134,6 +134,27 @@ mistura de versões do pipeline...). Todos os `.md` e `.csv` levam a marca
 `⚠️ ENSAIO TÉCNICO — DADOS FICTÍCIOS. NÃO USAR NA TESE.`; a pasta está no `.gitignore`
 e é recusada pelo hook de rasura. **Nenhum número do ensaio pode entrar na tese.**
 
+## Cenários sem evidência (EQ-04 e verdadeiros negativos)
+
+Quando a execução do DarkSherlock escolhida para um cenário termina num relatório sem
+evidência, não há afirmações nem citações para a rubric Likert. Esses cenários saem da
+EQ-04 (as duas condições, para a comparação continuar emparelhada), e a exclusão fica
+registada em `private/key.json` e no resumo:
+
+```bash
+python evaluation/eq04_review.py build --investigations "investigations/eval_*.json" --model "Phi-3.5-mini (embutido, médio)" --since 20261110 --pipeline-version 2.3 --manual-dir evaluation/baseline_manual --exclude-no-evidence
+```
+
+Esses cenários entram depois na tabela de verdadeiros/falsos negativos, que compara a
+ausência de evidência do DarkSherlock com o baseline manual e com os rótulos do pool:
+
+```bash
+python evaluation/true_negatives.py --investigations "investigations/eval_*.json" --model "Phi-3.5-mini (embutido, médio)" --since 20261110 --pipeline-version 2.3
+```
+
+Usa em `--since` o primeiro dia do baseline manual: assim as execuções do DarkSherlock
+usadas são as emparelhadas com o trabalho manual (mesmo dia, ≤ 1 hora de intervalo).
+
 ## Revisor LLM complementar (opcional, além dos revisores humanos)
 
 Depois de os revisores humanos terminarem, `evaluation/llm_judge.py` pode repetir as
