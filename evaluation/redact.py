@@ -52,6 +52,7 @@ FORBIDDEN_PATHS = [
     re.compile(r"^config/ui_settings\.json$"),   # pode ter instruções com alvos reais
     re.compile(r"^investigations/"),
     re.compile(r"^evaluation/ground_truth/"),
+    re.compile(r"^evaluation/ensaio/"),           # ensaio técnico: dados fictícios + URLs reais
     re.compile(r"^evaluation/baseline_manual/(sources|reports)/"),
 ]
 
