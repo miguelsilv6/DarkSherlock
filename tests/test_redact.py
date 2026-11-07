@@ -131,6 +131,13 @@ def test_check_staged_blocks_real_terms_and_forbidden_paths(tmp_path):
     r = staged_check()
     assert r.returncode == 1 and "investigations/x.json" in r.stderr
 
+    _git(repo, "reset", "-q", "investigations/x.json")
+    (repo / "evaluation" / "ensaio" / "E").mkdir(parents=True)
+    (repo / "evaluation" / "ensaio" / "E" / "LEIA-ME.md").write_text("ensaio\n", encoding="utf-8")
+    _git(repo, "add", "-f", "evaluation/ensaio/E/LEIA-ME.md")
+    r = staged_check()
+    assert r.returncode == 1 and "evaluation/ensaio/E/LEIA-ME.md" in r.stderr
+
 
 def test_scenarios_load_local_or_synthetic(tmp_path):
     sc, src = S.load(tmp_path / "missing.json")

@@ -116,3 +116,44 @@ Etapas 2–3 (não só as escolhidas) em `reports/manual_sources_<ID>.csv`, com 
 `url,title,engine,selected` (modelo em `templates/manual_sources_template.csv`).
 `selected = 1` marca as (até 20) fontes escolhidas na triagem, que formam o Top-20 manual.
 Estas listas alimentam `evaluation/eq02_eq03.py` (ver o cabeçalho desse ficheiro).
+
+## Antes de começar: ensaio técnico (dados fictícios)
+
+Antes de investires horas no baseline, confirma que todo o circuito de análise funciona
+com as tuas investigações reais:
+
+```bash
+python evaluation/ensaio_tecnico.py --model "Phi-3.5-mini (embutido, médio)" --since 20261009
+```
+
+O script gera um baseline e folhas de revisores **aleatórios** em
+`evaluation/ensaio/ENSAIO_FICTICIO_<data>/` e corre `tabela13.py`, `eq02_eq03.py` e
+`eq04_review.py` de ponta a ponta. O `LEIA-ME.md` dessa pasta lista os passos e os
+problemas encontrados (cenários sem execuções, relatórios "Sem dados suficientes",
+mistura de versões do pipeline...). Todos os `.md` e `.csv` levam a marca
+`⚠️ ENSAIO TÉCNICO — DADOS FICTÍCIOS. NÃO USAR NA TESE.`; a pasta está no `.gitignore`
+e é recusada pelo hook de rasura. **Nenhum número do ensaio pode entrar na tese.**
+
+## Revisor LLM complementar (opcional, além dos revisores humanos)
+
+Depois de os revisores humanos terminarem, `evaluation/llm_judge.py` pode repetir as
+mesmas tarefas com um modelo local e medir a concordância LLM–humano:
+
+```bash
+python evaluation/llm_judge.py eq0203 --ground-truth evaluation/ground_truth --investigations "investigations/eval_*.json" --model "<outro modelo>"
+python evaluation/llm_judge.py eq04 --out evaluation/ground_truth/eq04 --model "<outro modelo>"
+python evaluation/llm_judge.py compare --ground-truth evaluation/ground_truth --eq04-out evaluation/ground_truth/eq04
+```
+
+- O juiz lê só o que os revisores leem (URL, título e texto da fonte; relatório e
+  evidência anonimizados) e nunca os rótulos humanos nem `private/key.json`.
+- Usa um modelo **diferente** do que gerou os relatórios (viés de auto-preferência);
+  o script avisa quando é o mesmo.
+- As saídas ficam em `llm_judge/` e nunca são lidas por `eq02_eq03.py` nem por
+  `eq04_review.py`: não substituem os revisores humanos.
+
+Texto sugerido para a metodologia: *"Como análise complementar, as tarefas de
+rotulagem do pool (EQ-02/EQ-03) e de pontuação dos relatórios (EQ-04) foram repetidas
+por um modelo de linguagem local (temperatura 0, prompt fixo, cego à condição), diferente
+do que gerou os relatórios. Reporta-se a concordância com os revisores humanos (κ de
+Cohen e κ ponderado), que não substitui a avaliação humana."*
