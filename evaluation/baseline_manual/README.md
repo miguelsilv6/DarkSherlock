@@ -134,6 +134,20 @@ mistura de versões do pipeline...). Todos os `.md` e `.csv` levam a marca
 `⚠️ ENSAIO TÉCNICO — DADOS FICTÍCIOS. NÃO USAR NA TESE.`; a pasta está no `.gitignore`
 e é recusada pelo hook de rasura. **Nenhum número do ensaio pode entrar na tese.**
 
+Com `--perfil realista` os valores deixam de ser uniformes e seguem pressupostos plausíveis
+(tempos por etapa, sobreposição de fontes, relevância latente, notas Likert por condição),
+descritos no `LEIA-ME.md` da pasta `evaluation/ensaio/SIMULADO_REALISTA_<data>/`. Os `.md`
+levam um rodapé de dados simulados e os `.csv` ficam sem marca. Os valores continuam inventados.
+
+Os dois perfis geram também `SIMULADO_Cap6_<data>.docx` (`evaluation/rascunho_cap6.py`): as
+secções de resultados do Capítulo 6 em Word, com o rodapé "Rascunho com dados simulados — não
+submeter" em todas as páginas. Com os dados reais, o mesmo script (sem `--ensaio`) gera
+`evaluation/results/Cap6_resultados_<data>.docx`, sem rodapé:
+
+```bash
+python evaluation/rascunho_cap6.py --first-table 13
+```
+
 ## Cenários sem evidência (EQ-04 e verdadeiros negativos)
 
 Quando a execução do DarkSherlock escolhida para um cenário termina num relatório sem

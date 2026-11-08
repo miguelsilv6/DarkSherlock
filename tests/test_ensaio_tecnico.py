@@ -135,3 +135,76 @@ def test_flags_no_evidence_reports(tmp_path):
     assert "Cenários excluídos" in (out / "eq04" / "eq04_summary.md").read_text(encoding="utf-8")
     tn = (out / "true_negatives.md").read_text(encoding="utf-8")
     assert "| B2 | 3 | 3/3 |" in tn and "| A1 | 3 | 0/3 |" in tn
+
+
+SC12 = tuple(f"{d}{n}" for d in "ABCD" for n in "123")
+NO_EV = ("A2", "B2", "B3", "C1", "C3", "D2", "D3")
+
+
+def test_realistic_profile_end_to_end(tmp_path):
+    inv, raw = make_investigations(tmp_path, scenarios=SC12, no_evidence=NO_EV)
+    out = tmp_path / "SIMULADO_REALISTA_t"
+    assert T.main(["--model", MODEL, "--since", "20261001", "--investigations", str(inv),
+                   "--raw", str(tmp_path / "raw_runs_*.csv"), "--out", str(out), "--perfil", "realista"]) == 0
+    # rodapé só nos .md; .csv sem marca; nenhuma marca d'água no topo
+    for p in out.rglob("*"):
+        if p.suffix == ".md":
+            text = p.read_text(encoding="utf-8")
+            assert text.rstrip().endswith(T.FOOTER), p
+            assert T.WATERMARK not in text, p
+        elif p.suffix == ".csv":
+            assert T.WATERMARK not in p.read_text(encoding="utf-8-sig") and T.FOOTER not in p.read_text(encoding="utf-8-sig")
+    # tempos dentro dos intervalos do perfil, por tipo de cenário
+    with open(out / "baseline_manual" / "timing_log.csv", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            kind = "sem" if r["scenario_id"] in NO_EV else "evid"
+            lo, hi = T.REALISTA["stage_s"][kind][int(r["stage_num"])]
+            assert lo <= float(r["duration_s"]) <= hi
+    # nenhuma fonte recolhida nos cenários sem evidência; 3–8 nos outros
+    for sc in SC12:
+        n = len(list((out / "baseline_manual" / "sources" / sc).glob("*.txt")))
+        assert (n == 0) if sc in NO_EV else (3 <= n <= 8), (sc, n)
+    readme = (out / "LEIA-ME.md").read_text(encoding="utf-8")
+    assert "Pressupostos do perfil realista" in readme and "FALHOU" not in readme
+    assert len(list(out.glob("SIMULADO_Cap6_*.docx"))) == 1
+
+
+def test_realistic_reviews_agreement_and_likert(tmp_path):
+    import random
+    import statistics
+    gt = tmp_path / "gt"
+    gt.mkdir()
+    urls = [f"http://u{i}.onion/" for i in range(3000)]
+    with open(gt / "review_A1_A.csv", "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["n", "url", "title", "label", "notes"])
+        w.writerows([i, u, "", "", ""] for i, u in enumerate(urls))
+    with open(gt / "pool_A1.csv", "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["url", "ds_top20_runs", "manual_top20"])
+        w.writerows([u, "1" if i % 2 else "", 0] for i, u in enumerate(urls))
+    T.fill_pool_reviews(gt, "A1", random.Random(5), "realista")
+    a = [r["label"] for r in csv.DictReader(open(gt / "review_A1_A.csv", encoding="utf-8-sig"))]
+    b = [r["label"] for r in csv.DictReader(open(gt / "review_A1_B.csv", encoding="utf-8-sig"))]
+    assert 0.8 < sum(x == y for x, y in zip(a, b)) / len(a) < 0.95
+    rel = sum(x == "relevant" for x in a) / len(a)
+    assert 0.2 < rel < 0.35  # média de 0,15 e 0,45, vezes 0,9 acessíveis
+
+    eq = tmp_path / "eq04"
+    (eq / "private").mkdir(parents=True)
+    key = {f"R{i:03d}": {"condition": "DarkSherlock" if i % 2 else "manual"} for i in range(400)}
+    (eq / "private" / "key.json").write_text(json.dumps({"reports": key}), encoding="utf-8")
+    for who in ("A", "B"):
+        (eq / f"reviewer_{who}").mkdir()
+        with open(eq / f"reviewer_{who}" / f"scores_{who}.csv", "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["id"])
+            w.writerows([rid] for rid in key)
+    T.fill_eq04_scores(eq, random.Random(5), "realista")
+    rows = list(csv.DictReader(open(eq / "reviewer_A" / "scores_A.csv", encoding="utf-8-sig")))
+    for cond, means in T.REALISTA["likert"].items():
+        sel = [r for r in rows if key[r["id"]]["condition"] == cond]
+        for d, m in means.items():
+            assert abs(statistics.mean(int(r[d]) for r in sel) - m) < 0.2, (cond, d)
+        rate = sum(int(r["afirmacoes_citacao_valida"]) for r in sel) / sum(int(r["afirmacoes_verificaveis"]) for r in sel)
+        assert abs(rate - T.REALISTA["citations"][cond][1]) < 0.04
