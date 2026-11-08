@@ -17,6 +17,17 @@ O que faz:
      mesmas folhas, para testar esse circuito.
   5. Marca TODOS os .md e .csv produzidos com a marca d'água abaixo e escreve
      LEIA-ME.md com os passos e os avisos dos scripts.
+  6. Gera o rascunho Word do Capítulo 6 (rascunho_cap6.py), com rodapé de
+     dados simulados em todas as páginas.
+
+Perfis (--perfil):
+  - aleatorio (default): valores uniformes, sem relação entre si; marca
+    d'água no topo de cada .md e .csv.
+  - realista: valores plausíveis, com os pressupostos de REALISTA (tempos por
+    etapa, sobreposição de fontes, relevância latente, notas Likert por
+    condição) para ver como o capítulo se lê. Pasta SIMULADO_REALISTA_<data>,
+    rodapé de dados simulados nos .md e no .docx; os .csv ficam sem marca.
+    Os números continuam a ser inventados e não podem entrar na tese.
 
 Os números produzidos NÃO têm significado e NÃO podem entrar na tese: servem
 só para ver o formato final das tabelas e apanhar erros (cenários sem
@@ -61,6 +72,7 @@ from baseline_helper import STAGE_NAMES  # noqa: E402
 
 ENSAIO_ROOT = HERE / "ensaio"
 WATERMARK = "⚠️ ENSAIO TÉCNICO — DADOS FICTÍCIOS. NÃO USAR NA TESE."
+FOOTER = "*Dados simulados (ensaio técnico, perfil realista) — não usar na tese.*"
 FAKE_URL = "http://ensaio-ficticio-{n}.onion/"
 FAKE_EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
 ENGINES = ("Ahmia", "Tor66", "The Deep Searches")
@@ -68,6 +80,32 @@ ENGINES = ("Ahmia", "Tor66", "The Deep Searches")
 STAGE_RANGES = {1: (120, 600), 2: (600, 1800), 3: (600, 1800), 4: (1800, 5400), 5: (1200, 3600)}
 LABEL_WEIGHTS = (("relevant", 0.3), ("not_relevant", 0.55), ("inaccessible", 0.15))
 AGREEMENT = 0.8
+
+# Perfil realista: pressupostos para valores plausíveis (não são medições). Tempos por etapa em
+# segundos, para cenários com e sem evidência no DarkSherlock (sem evidência: triagem, recolha e
+# relatório curtos); fontes manuais = parte das URLs reais do DarkSherlock + só manuais; relevância
+# latente de cada URL do pool; notas Likert por condição (média, DP comum) e taxa de citação válida.
+REALISTA = {
+    "stage_s": {
+        "evid": {1: (180, 480), 2: (900, 1800), 3: (900, 2100), 4: (2400, 5400), 5: (1800, 3600)},
+        "sem": {1: (180, 480), 2: (900, 1800), 3: (600, 1200), 4: (600, 1500), 5: (600, 1200)},
+    },
+    "share_real": 0.4,           # fração das URLs do DarkSherlock que o investigador também vê
+    "manual_only": (0.3, 0.5),   # fração da lista manual que só o investigador encontrou
+    "collected": {"evid": (3, 8), "sem": (0, 0)},
+    "p_rel": {"base": 0.15, "ds_top20": 0.30, "manual_sel": 0.35, "sem": 0.01},
+    "p_inaccessible": 0.10,
+    "agree_b": 0.88,             # revisor B igual ao rótulo latente (A)
+    "likert": {
+        "DarkSherlock": {"correcao_tecnica": 3.6, "auditabilidade": 3.9, "utilidade_operacional": 3.3,
+                         "ausencia_alucinacoes": 3.4},
+        "manual": {"correcao_tecnica": 4.1, "auditabilidade": 4.2, "utilidade_operacional": 3.9,
+                   "ausencia_alucinacoes": 4.6},
+    },
+    "likert_sd": 0.7,
+    "b_delta": ((0, 0.70), (1, 0.125), (-1, 0.125), (2, 0.025), (-2, 0.025)),
+    "citations": {"DarkSherlock": ((8, 18), 0.78), "manual": ((5, 12), 0.93)},
+}
 PROTECTED = ("evaluation/baseline_manual", "evaluation/ground_truth", "investigations", "evaluation/results")
 
 
@@ -99,8 +137,19 @@ def _pick_label(rng: random.Random) -> str:
     return LABEL_WEIGHTS[-1][0]
 
 
-def write_fake_baseline(base: Path, chosen: dict, rng: random.Random) -> dict[str, int]:
+def _weighted(rng: random.Random, pairs) -> object:
+    x, acc = rng.random(), 0.0
+    for value, w in pairs:
+        acc += w
+        if x < acc:
+            return value
+    return pairs[-1][0]
+
+
+def write_fake_baseline(base: Path, chosen: dict, rng: random.Random, perfil: str = "aleatorio",
+                        no_evidence: set[str] = frozenset()) -> dict[str, int]:
     """Escreve o baseline fictício em `base`. Devolve {cenário: n.º de fontes manuais}."""
+    real_profile = perfil == "realista"
     (base / "reports").mkdir(parents=True, exist_ok=True)
     counts = {}
     t = FAKE_EPOCH
@@ -108,8 +157,9 @@ def write_fake_baseline(base: Path, chosen: dict, rng: random.Random) -> dict[st
         w = csv.DictWriter(f, fieldnames=["scenario_id", "stage_num", "stage_name", "start_utc", "end_utc", "duration_s"])
         w.writeheader()
         for sc in sorted(chosen):
+            ranges = REALISTA["stage_s"]["sem" if sc in no_evidence else "evid"] if real_profile else STAGE_RANGES
             for n in sorted(STAGE_NAMES):
-                dur = round(rng.uniform(*STAGE_RANGES[n]), 1)
+                dur = round(rng.uniform(*ranges[n]), 1)
                 end = t + timedelta(seconds=dur)
                 w.writerow({"scenario_id": sc, "stage_num": n, "stage_name": STAGE_NAMES[n],
                             "start_utc": t.isoformat(), "end_utc": end.isoformat(), "duration_s": dur})
@@ -123,18 +173,28 @@ def write_fake_baseline(base: Path, chosen: dict, rng: random.Random) -> dict[st
             if r.get("link") and u not in seen:
                 seen.add(u)
                 real.append(r["link"])
-        rows = [(u, "[ENSAIO FICTÍCIO] título") for u in rng.sample(real, min(15, len(real)))]
-        for _ in range(5):
+        if real_profile:
+            n_real = min(30, max(1, round(REALISTA["share_real"] * len(real)))) if real else 0
+            share = rng.uniform(*REALISTA["manual_only"])
+            n_fake = max(1, round(n_real * share / (1 - share)))
+        else:
+            n_real, n_fake = min(15, len(real)), 5
+        rows = [(u, "[ENSAIO FICTÍCIO] título") for u in rng.sample(real, n_real)]
+        for _ in range(n_fake):
             fake_n += 1
             rows.append((FAKE_URL.format(n=fake_n), "[ENSAIO FICTÍCIO] fonte inventada"))
         rng.shuffle(rows)
-        selected = set(rng.sample(range(len(rows)), min(20, max(1, int(len(rows) * 0.6)))))
+        n_sel = min(20, max(1, int(len(rows) * (0.5 if real_profile else 0.6))))
+        selected = set(rng.sample(range(len(rows)), n_sel))
         with open(base / "reports" / f"manual_sources_{sc}.csv", "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["url", "title", "engine", "selected"])
             for i, (u, title) in enumerate(rows):
                 w.writerow([u, title, rng.choice(ENGINES), int(i in selected)])
-        n_src = rng.randint(1, 4)
+        if real_profile:
+            n_src = rng.randint(*REALISTA["collected"]["sem" if sc in no_evidence else "evid"])
+        else:
+            n_src = rng.randint(1, 4)
         (base / "sources" / sc).mkdir(parents=True, exist_ok=True)
         for k in range(1, n_src + 1):
             (base / "sources" / sc / f"fonte{k}.txt").write_text(
@@ -157,15 +217,44 @@ def write_fake_baseline(base: Path, chosen: dict, rng: random.Random) -> dict[st
 # ---------------------------------------------------------------------------
 # Revisores fictícios
 # ---------------------------------------------------------------------------
-def fill_pool_reviews(gt: Path, scenario: str, rng: random.Random) -> int:
-    """Preenche review_<ID>_A/B.csv (concordância ≈ AGREEMENT) e _final.csv. Devolve n.º de discordâncias."""
+def _latent_label(rng: random.Random, pool_row: dict | None, no_evidence: bool) -> str:
+    """Rótulo "verdadeiro" do perfil realista, a partir da posição da URL no pool."""
+    pr = REALISTA["p_rel"]
+    if rng.random() < REALISTA["p_inaccessible"]:
+        return "inaccessible"
+    if no_evidence:
+        p = pr["sem"]
+    else:
+        p = pr["base"]
+        if pool_row and (pool_row.get("ds_top20_runs") or "").strip():
+            p += pr["ds_top20"]
+        if pool_row and (pool_row.get("manual_top20") or "").strip() == "1":
+            p += pr["manual_sel"]
+    return "relevant" if rng.random() < min(p, 0.9) else "not_relevant"
+
+
+def fill_pool_reviews(gt: Path, scenario: str, rng: random.Random, perfil: str = "aleatorio",
+                      no_evidence: bool = False) -> int:
+    """Preenche review_<ID>_A/B.csv e _final.csv. Devolve n.º de discordâncias.
+
+    aleatorio: rótulos uniformes, concordância ≈ AGREEMENT. realista: o revisor A segue a relevância latente
+    (REALISTA["p_rel"], lida de pool_<ID>.csv) e o B concorda com ele em ≈ REALISTA["agree_b"].
+    """
     pa, pb = gt / f"review_{scenario}_A.csv", gt / f"review_{scenario}_B.csv"
     with open(pa, newline="", encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
+    pool = {}
+    if perfil == "realista" and (gt / f"pool_{scenario}.csv").is_file():
+        with open(gt / f"pool_{scenario}.csv", newline="", encoding="utf-8-sig") as f:
+            pool = {eq02_eq03.normalize_url(r["url"]): r for r in csv.DictReader(f)}
+    agreement = REALISTA["agree_b"] if perfil == "realista" else AGREEMENT
     labels_a, labels_b, disagreements = [], [], []
     for r in rows:
-        a = _pick_label(rng)
-        b = a if rng.random() < AGREEMENT else rng.choice([x for x, _ in LABEL_WEIGHTS if x != a])
+        if perfil == "realista":
+            a = _latent_label(rng, pool.get(eq02_eq03.normalize_url(r["url"])), no_evidence)
+        else:
+            a = _pick_label(rng)
+        b = a if rng.random() < agreement else rng.choice([x for x, _ in LABEL_WEIGHTS if x != a])
         labels_a.append(a)
         labels_b.append(b)
         if a != b:
@@ -183,15 +272,29 @@ def fill_pool_reviews(gt: Path, scenario: str, rng: random.Random) -> int:
     return len(disagreements)
 
 
-def fill_eq04_scores(eq04: Path, rng: random.Random) -> None:
+def fill_eq04_scores(eq04: Path, rng: random.Random, perfil: str = "aleatorio") -> None:
+    """Preenche scores_A/B.csv. realista: notas por condição (REALISTA["likert"]), lida de private/key.json."""
     rids = []
     with open(eq04 / "reviewer_A" / "scores_A.csv", newline="", encoding="utf-8-sig") as f:
         rids = [r["id"] for r in csv.DictReader(f)]
+    key = {}
+    if perfil == "realista":
+        key = json.loads((eq04 / "private" / "key.json").read_text(encoding="utf-8"))["reports"]
     a_scores = {}
     for rid in rids:
-        ver = rng.randint(3, 15)
-        a_scores[rid] = {"dims": {d: rng.randint(1, 5) for d in eq04_review.DIMENSIONS}, "ver": ver,
-                         "val": rng.randint(0, ver)}
+        if perfil == "realista":
+            cond = key[rid]["condition"]
+            means = REALISTA["likert"][cond]
+            (lo, hi), rate = REALISTA["citations"][cond]
+            ver = rng.randint(lo, hi)
+            dims = {d: min(5, max(1, round(rng.gauss(means[d], REALISTA["likert_sd"])))) for d in eq04_review.DIMENSIONS}
+            val = min(ver, max(0, round(ver * min(1.0, max(0.0, rng.gauss(rate, 0.08))))))
+            a_scores[rid] = {"dims": dims, "ver": ver, "val": val}
+        else:
+            ver = rng.randint(3, 15)
+            a_scores[rid] = {"dims": {d: rng.randint(1, 5) for d in eq04_review.DIMENSIONS}, "ver": ver,
+                             "val": rng.randint(0, ver)}
+    delta = REALISTA["b_delta"] if perfil == "realista" else ((0, .5), (1, 1 / 6), (-1, 1 / 6), (2, 1 / 6))
     for who in ("A", "B"):
         path = eq04 / f"reviewer_{who}" / f"scores_{who}.csv"
         with open(path, newline="", encoding="utf-8-sig") as f:
@@ -202,7 +305,7 @@ def fill_eq04_scores(eq04: Path, rng: random.Random) -> None:
             for rid in order:
                 s = a_scores[rid]
                 dims = s["dims"] if who == "A" else {
-                    d: min(5, max(1, v + rng.choice((0, 0, 0, 1, -1, 2)))) for d, v in s["dims"].items()}
+                    d: min(5, max(1, v + _weighted(rng, delta))) for d, v in s["dims"].items()}
                 ver = s["ver"] if who == "A" else max(0, s["ver"] + rng.choice((0, 1, -1)))
                 val = min(ver, s["val"] if who == "A" else max(0, s["val"] + rng.choice((0, 1, -1))))
                 w.writerow({"id": rid, **dims, "afirmacoes_verificaveis": ver, "afirmacoes_citacao_valida": val,
@@ -257,12 +360,18 @@ def _filters(args) -> list[str]:
     return extra
 
 
-def _watermark(out: Path) -> int:
+def _watermark(out: Path, perfil: str = "aleatorio") -> int:
+    """aleatorio: marca d'água no topo de .md e .csv. realista: rodapé só nos .md (os .csv ficam limpos)."""
     n = 0
     for p in sorted(out.rglob("*")):
         if not p.is_file() or p.suffix.lower() not in (".md", ".csv"):
             continue
         text = p.read_text(encoding="utf-8-sig")
+        if perfil == "realista":
+            if p.suffix.lower() == ".md" and FOOTER not in text:
+                p.write_text(text.rstrip("\n") + f"\n\n---\n\n{FOOTER}\n", encoding="utf-8")
+                n += 1
+            continue
         if WATERMARK in text.split("\n", 1)[0]:
             continue
         prefix = f"> {WATERMARK}\n\n" if p.suffix.lower() == ".md" else f"# {WATERMARK}\n"
@@ -297,13 +406,44 @@ def _log_warnings(step: dict, skip_scenarios: set[str], limit: int = 15) -> list
     return out[:limit]
 
 
+def _assumptions() -> list[str]:
+    r = REALISTA
+    st = r["stage_s"]
+    L = ["## Pressupostos do perfil realista\n",
+         "| Etapa | Com evidência (s) | Sem evidência (s) |", "|---|---|---|"]
+    for n in sorted(STAGE_NAMES):
+        L.append(f"| {n}. {STAGE_NAMES[n]} | {st['evid'][n][0]}–{st['evid'][n][1]} | {st['sem'][n][0]}–{st['sem'][n][1]} |")
+    pr = r["p_rel"]
+    L += ["",
+          f"- Fontes manuais: {r['share_real']:.0%} das URLs do DarkSherlock + {r['manual_only'][0]:.0%}–"
+          f"{r['manual_only'][1]:.0%} só manuais; recolhidas {r['collected']['evid'][0]}–{r['collected']['evid'][1]} "
+          "com evidência e 0 sem evidência.",
+          f"- Relevância latente: {pr['base']} + {pr['ds_top20']} (Top-20 do DarkSherlock) + {pr['manual_sel']} "
+          f"(selecionada à mão); {pr['sem']} nos cenários sem evidência; {r['p_inaccessible']:.0%} inacessíveis; "
+          f"revisor B concorda com A em {r['agree_b']:.0%}.",
+          "- Likert (média, DP " + str(r["likert_sd"]) + "): " + "; ".join(
+              f"{c}: " + ", ".join(f"{k} {v}" for k, v in m.items()) for c, m in r["likert"].items()) + ".",
+          "- Citação válida: " + "; ".join(f"{c} {v[1]:.0%} de {v[0][0]}–{v[0][1]} afirmações"
+                                           for c, v in r["citations"].items()) + ".\n"]
+    return L
+
+
 def write_readme(out: Path, runner: Runner, args, problems: list[str], missing: set[str]) -> None:
-    L = [f"> {WATERMARK}\n", "# Ensaio técnico das análises humanas\n",
-         "Baseline manual, rótulos e pontuações dos revisores são **aleatórios**. Os números das tabelas não têm "
-         "significado: o ensaio serve para ver o formato final e apanhar erros antes da recolha real.\n",
+    realista = getattr(args, "perfil", "aleatorio") == "realista"
+    if realista:
+        head = ["# Ensaio técnico — perfil realista\n",
+                "Baseline manual, rótulos e pontuações dos revisores são **simulados** com os pressupostos abaixo. "
+                "Os valores são plausíveis mas inventados: servem para ver como o capítulo se lê e não podem entrar "
+                "na tese.\n"]
+    else:
+        head = [f"> {WATERMARK}\n", "# Ensaio técnico das análises humanas\n",
+                "Baseline manual, rótulos e pontuações dos revisores são **aleatórios**. Os números das tabelas não "
+                "têm significado: o ensaio serve para ver o formato final e apanhar erros antes da recolha real.\n"]
+    L = [*head,
          f"- Gerado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
          f"- Modelo das execuções: `{args.model}` · desde {args.since} · semente {args.seed}",
          f"- Investigações lidas (só leitura): `{args.investigations}`\n",
+         *(_assumptions() if realista else []),
          "## Passos\n", "| # | Passo | Estado | Tempo (s) | Log |", "|---|---|---|---|---|"]
     for i, s in enumerate(runner.steps, 1):
         log = Path(s["log"]).relative_to(out) if s["log"] else "—"
@@ -316,11 +456,15 @@ def write_readme(out: Path, runner: Runner, args, problems: list[str], missing: 
         L.extend(f"- [{name}] {w}" for name, w in warned)
     if not problems and not warned:
         L.append("- Nenhum.")
-    L.append("\n## Resultados (fictícios)\n")
+    L.append("\n## Resultados (simulados)\n" if realista else "\n## Resultados (fictícios)\n")
     for rel in ("eq01_tabela13.md", "eq02_eq03/eq02_eq03_summary.md", "true_negatives.md", "eq04/eq04_summary.md",
                 "ground_truth/llm_judge/llm_judge_summary.md"):
         if (out / rel).is_file():
             L.append(f"- `{rel}`")
+    for p in sorted(out.glob("SIMULADO_Cap6_*.docx")):
+        L.append(f"- `{p.name}` (rascunho Word do Capítulo 6, com rodapé de dados simulados)")
+    if realista:
+        L.append(f"\n---\n\n{FOOTER}")
     (out / "LEIA-ME.md").write_text("\n".join(L) + "\n", encoding="utf-8")
 
 
@@ -333,13 +477,17 @@ def main(argv=None) -> int:
     ap.add_argument("--raw", default=str(HERE / "results" / "raw_runs_*.csv"), help="CSVs do run_scenarios (Tabela 13).")
     ap.add_argument("--out", default=None, help="Pasta de saída (default: evaluation/ensaio/ENSAIO_FICTICIO_<data>).")
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--perfil", choices=("aleatorio", "realista"), default="aleatorio",
+                    help="aleatorio: valores uniformes com marca d'água; realista: valores plausíveis (REALISTA), "
+                         "com rodapé de dados simulados (default: aleatorio).")
     ap.add_argument("--with-llm-judge", action="store_true", help="Corre também o llm_judge.py sobre as folhas fictícias.")
     ap.add_argument("--judge-model", default=None, help="Modelo do juiz (default: --model; de preferência outro).")
     ap.add_argument("--judge-limit", type=int, default=5,
                     help="No ensaio, o juiz só avalia as primeiras N fontes por cenário e N relatórios (default: 5).")
     args = ap.parse_args(argv)
 
-    out = Path(args.out) if args.out else ENSAIO_ROOT / f"ENSAIO_FICTICIO_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    prefix = "SIMULADO_REALISTA" if args.perfil == "realista" else "ENSAIO_FICTICIO"
+    out = Path(args.out) if args.out else ENSAIO_ROOT / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     problem = out_dir_problem(out)
     if problem:
         print(f"ERRO: {problem}")
@@ -364,16 +512,18 @@ def main(argv=None) -> int:
     missing = [sc for sc in eq04_review.SCENARIO_IDS if sc not in chosen]
     if missing:
         problems.append(f"Cenários sem execuções utilizáveis do modelo (ficam fora do ensaio): {', '.join(missing)}.")
+    no_evidence = set()
     for sc, c in sorted(chosen.items()):
         summary, _ = eq04_review.strip_darksherlock_banners(c["data"].get("summary", ""))
         if eq04_review.is_no_evidence(summary):
+            no_evidence.add(sc)
             problems.append(f"{sc}: o relatório do DarkSherlock escolhido para a EQ-04 é um relatório sem evidência "
                             "— excluído da EQ-04 (--exclude-no-evidence) e analisado em true_negatives.md.")
 
-    print(f"Ensaio técnico (DADOS FICTÍCIOS) em {out}")
+    print(f"Ensaio técnico ({'dados simulados, perfil realista' if args.perfil == 'realista' else 'DADOS FICTÍCIOS'}) em {out}")
     print(f"Cenários com execuções: {', '.join(sorted(chosen))}\n")
     base = out / "baseline_manual"
-    write_fake_baseline(base, chosen, rng)
+    write_fake_baseline(base, chosen, rng, args.perfil, no_evidence)
     runner = Runner(out)
     runner.note("baseline_ficticio", f"OK ({len(chosen)} cenários)")
     filters = _filters(args)
@@ -390,7 +540,7 @@ def main(argv=None) -> int:
                                                 "--manual", str(base / "reports" / f"manual_sources_{sc}.csv"),
                                                 "--out", str(gt), "--seed", str(args.seed), *filters])
         if code == 0:
-            fill_pool_reviews(gt, sc, rng)
+            fill_pool_reviews(gt, sc, rng, args.perfil, sc in no_evidence)
             built.append(sc)
     if built:
         runner.run("eq02_eq03_analyze", [str(HERE / "eq02_eq03.py"), "analyze", "--ground-truth", str(gt),
@@ -404,7 +554,7 @@ def main(argv=None) -> int:
     if runner.run("eq04_build", [str(HERE / "eq04_review.py"), "build", "--investigations", inv_glob, *filters,
                                  "--manual-dir", str(base), "--out", str(eq04), "--seed", str(args.seed),
                                  "--allow-incomplete", "--exclude-no-evidence"]) == 0:
-        fill_eq04_scores(eq04, rng)
+        fill_eq04_scores(eq04, rng, args.perfil)
         analyze = [str(HERE / "eq04_review.py"), "analyze", "--out", str(eq04)]
         if runner.run("eq04_analyze_1", analyze, ok_codes=(0, 1)) == 1:
             n = fill_reconciliation(eq04)
@@ -425,10 +575,12 @@ def main(argv=None) -> int:
         runner.run("llm_judge_compare", [str(HERE / "llm_judge.py"), "compare", "--ground-truth", str(gt),
                                          "--eq04-out", str(eq04)])
 
-    n = _watermark(out)
+    runner.run("rascunho_cap6", [str(HERE / "rascunho_cap6.py"), "--ensaio", str(out)])
+    n = _watermark(out, args.perfil)
     write_readme(out, runner, args, problems, set(missing))
     failed = [s for s in runner.steps if not s["status"].startswith("OK")]
-    print(f"\nMarca d'água aplicada a {n} ficheiro(s). Resumo: {out / 'LEIA-ME.md'}")
+    what = "Rodapé de dados simulados aplicado" if args.perfil == "realista" else "Marca d'água aplicada"
+    print(f"\n{what} a {n} ficheiro(s). Resumo: {out / 'LEIA-ME.md'}")
     if problems:
         print(f"{len(problems)} problema(s) assinalado(s) no LEIA-ME.md.")
     print("FALHOU: " + ", ".join(s["name"] for s in failed) if failed else "Todos os passos correram.")
